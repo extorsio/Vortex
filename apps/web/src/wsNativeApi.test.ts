@@ -1,4 +1,5 @@
 import {
+  type BrowserPreviewState,
   CommandId,
   type ContextMenuItem,
   EventId,
@@ -101,6 +102,19 @@ const defaultProviders: ReadonlyArray<ServerProviderStatus> = [
     checkedAt: "2026-01-01T00:00:00.000Z",
   },
 ];
+
+const closedBrowserPreviewState: BrowserPreviewState = {
+  open: false,
+  status: "closed",
+  url: null,
+  title: null,
+  canGoBack: false,
+  canGoForward: false,
+  loading: false,
+  lastError: null,
+  bounds: null,
+  workspaceRoot: null,
+};
 
 beforeEach(() => {
   vi.resetModules();
@@ -379,6 +393,94 @@ describe("wsNativeApi", () => {
     expect(showContextMenuFallbackMock).toHaveBeenCalledWith(
       [{ id: "delete", label: "Delete", destructive: true }],
       { x: 20, y: 30 },
+    );
+  });
+
+  it("forwards browser preview bridge calls and replays state changes", async () => {
+    const onStateChanged = vi.fn<(listener: (state: BrowserPreviewState) => void) => () => void>(
+      (listener) => {
+        listener(closedBrowserPreviewState);
+        listener({
+          ...closedBrowserPreviewState,
+          open: true,
+          status: "ready",
+          url: "http://localhost:3000/",
+          title: "Preview",
+          workspaceRoot: "/tmp/project",
+        });
+        return () => undefined;
+      },
+    );
+    const browserPreviewBridge = {
+      open: vi.fn().mockResolvedValue({
+        ...closedBrowserPreviewState,
+        open: true,
+        status: "loading",
+        url: "http://localhost:3000/",
+        loading: true,
+        workspaceRoot: "/tmp/project",
+      }),
+      close: vi.fn().mockResolvedValue(closedBrowserPreviewState),
+      navigate: vi.fn().mockResolvedValue({
+        ...closedBrowserPreviewState,
+        open: true,
+        status: "ready",
+        url: "http://localhost:4173/",
+        title: "New Preview",
+        workspaceRoot: "/tmp/project",
+      }),
+      goBack: vi.fn().mockResolvedValue(closedBrowserPreviewState),
+      goForward: vi.fn().mockResolvedValue(closedBrowserPreviewState),
+      reload: vi.fn().mockResolvedValue(closedBrowserPreviewState),
+      setBounds: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue(closedBrowserPreviewState),
+      onStateChanged,
+    };
+    Object.defineProperty(getWindowForTest(), "desktopBridge", {
+      configurable: true,
+      writable: true,
+      value: {
+        browserPreview: browserPreviewBridge,
+      },
+    });
+
+    const { createWsNativeApi, onBrowserPreviewState } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+
+    const listener = vi.fn();
+    onBrowserPreviewState(listener);
+
+    await api.browserPreview.open({
+      url: "http://localhost:3000/",
+      workspaceRoot: "/tmp/project",
+    });
+    await api.browserPreview.navigate({
+      url: "http://localhost:4173/",
+      workspaceRoot: "/tmp/project",
+    });
+    await api.browserPreview.setBounds({ x: 10, y: 20, width: 400, height: 320 });
+
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+    expect(browserPreviewBridge.open).toHaveBeenCalledWith({
+      url: "http://localhost:3000/",
+      workspaceRoot: "/tmp/project",
+    });
+    expect(browserPreviewBridge.navigate).toHaveBeenCalledWith({
+      url: "http://localhost:4173/",
+      workspaceRoot: "/tmp/project",
+    });
+    expect(browserPreviewBridge.setBounds).toHaveBeenCalledWith({
+      x: 10,
+      y: 20,
+      width: 400,
+      height: 320,
+    });
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        open: true,
+        status: "ready",
+        url: "http://localhost:4173/",
+      }),
     );
   });
 });

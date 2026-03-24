@@ -1,5 +1,6 @@
 import {
   type ApprovalRequestId,
+  type BrowserPreviewState,
   DEFAULT_MODEL_BY_PROVIDER,
   type ClaudeCodeEffort,
   type MessageId,
@@ -27,6 +28,7 @@ import {
   normalizeModelSlug,
   resolveModelSlugForProvider,
 } from "@t3tools/shared/model";
+import { Schema } from "effect";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
@@ -68,6 +70,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import { useStore } from "../store";
+import { useBrowserPreviewStore } from "../browserPreviewStore";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -148,6 +151,7 @@ import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import { BrowserPreviewPanel } from "./chat/BrowserPreviewPanel";
 import { AVAILABLE_PROVIDER_OPTIONS, ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./chat/ComposerPendingApprovalActions";
@@ -178,6 +182,10 @@ import {
   SendPhase,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import {
+  collectMessageBrowserPreviewObservations,
+  resolvePreferredBrowserPreviewUrl,
+} from "../browserPreview";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -189,6 +197,24 @@ const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProviderStatus[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_BROWSER_PREVIEW_OBSERVATIONS: ReturnType<
+  typeof collectMessageBrowserPreviewObservations
+> = [];
+const BROWSER_PREVIEW_PANEL_OPEN_KEY = "t3code:browser-preview:open";
+const BROWSER_PREVIEW_PANEL_WIDTH_KEY = "t3code:browser-preview:width";
+const DEFAULT_BROWSER_PREVIEW_WIDTH = 560;
+const CLOSED_BROWSER_PREVIEW_STATE: BrowserPreviewState = {
+  open: false,
+  status: "closed",
+  url: null,
+  title: null,
+  canGoBack: false,
+  canGoForward: false,
+  loading: false,
+  lastError: null,
+  bounds: null,
+  workspaceRoot: null,
+};
 
 function formatOutgoingPrompt(params: {
   provider: ProviderKind;
@@ -360,6 +386,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
     {},
     LastInvokedScriptByProjectSchema,
   );
+  const [browserPreviewPanelOpen, setBrowserPreviewPanelOpen] = useLocalStorage(
+    BROWSER_PREVIEW_PANEL_OPEN_KEY,
+    false,
+    Schema.Boolean,
+  );
+  const [browserPreviewPanelWidth, setBrowserPreviewPanelWidth] = useLocalStorage(
+    BROWSER_PREVIEW_PANEL_WIDTH_KEY,
+    DEFAULT_BROWSER_PREVIEW_WIDTH,
+    Schema.Number,
+  );
+  const [browserPreviewState, setBrowserPreviewState] = useState<BrowserPreviewState>(
+    CLOSED_BROWSER_PREVIEW_STATE,
+  );
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const [messagesScrollElement, setMessagesScrollElement] = useState<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -482,6 +521,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
+  const terminalPreviewObservations = useBrowserPreviewStore((store) =>
+    activeThreadId
+      ? (store.terminalObservationsByThreadId[activeThreadId] ?? EMPTY_BROWSER_PREVIEW_OBSERVATIONS)
+      : EMPTY_BROWSER_PREVIEW_OBSERVATIONS,
+  );
+  const detectedBrowserPreviewUrl = useMemo(() => {
+    if (!activeThread) {
+      return null;
+    }
+    return resolvePreferredBrowserPreviewUrl({
+      messageObservations: collectMessageBrowserPreviewObservations(activeThread.messages),
+      terminalObservations: terminalPreviewObservations,
+    });
+  }, [activeThread, terminalPreviewObservations]);
 
   const openPullRequestDialog = useCallback(
     (reference?: string) => {
@@ -1111,6 +1164,94 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
+  const browserPreviewVisible = isElectron && browserPreviewPanelOpen;
+
+  useEffect(() => {
+    if (!isElectron) {
+      return;
+    }
+    const api = readNativeApi();
+    if (!api) {
+      return;
+    }
+
+    let disposed = false;
+    void api.browserPreview
+      .getState()
+      .then((state) => {
+        if (disposed) return;
+        setBrowserPreviewState(state);
+      })
+      .catch(() => undefined);
+
+    const unsubscribe = api.browserPreview.onStateChanged((state) => {
+      if (disposed) return;
+      setBrowserPreviewState(state);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isElectron || !browserPreviewPanelOpen || browserPreviewState.open) {
+      return;
+    }
+    const api = readNativeApi();
+    if (!api) {
+      return;
+    }
+
+    void api.browserPreview
+      .open({
+        ...(detectedBrowserPreviewUrl ? { url: detectedBrowserPreviewUrl } : {}),
+        workspaceRoot: activeProjectCwd,
+      })
+      .catch(() => undefined);
+  }, [
+    activeProjectCwd,
+    browserPreviewPanelOpen,
+    browserPreviewState.open,
+    detectedBrowserPreviewUrl,
+  ]);
+
+  const openBrowserPreview = useCallback(() => {
+    const api = readNativeApi();
+    if (!api) {
+      return;
+    }
+    setBrowserPreviewPanelOpen(true);
+    void api.browserPreview
+      .open({
+        ...(detectedBrowserPreviewUrl ? { url: detectedBrowserPreviewUrl } : {}),
+        workspaceRoot: activeProjectCwd,
+      })
+      .catch(() => undefined);
+  }, [activeProjectCwd, detectedBrowserPreviewUrl, setBrowserPreviewPanelOpen]);
+
+  const closeBrowserPreview = useCallback(() => {
+    setBrowserPreviewPanelOpen(false);
+    const api = readNativeApi();
+    if (!api) {
+      setBrowserPreviewState(CLOSED_BROWSER_PREVIEW_STATE);
+      return;
+    }
+    void api.browserPreview.close().catch(() => undefined);
+  }, [setBrowserPreviewPanelOpen]);
+
+  const setBrowserPreviewPressed = useCallback(
+    (pressed: boolean) => {
+      if (pressed) {
+        openBrowserPreview();
+        return;
+      }
+      closeBrowserPreview();
+    },
+    [closeBrowserPreview, openBrowserPreview],
+  );
+
   const threadTerminalRuntimeEnv = useMemo(() => {
     if (!activeProjectCwd) return {};
     return projectScriptRuntimeEnv({
@@ -3481,6 +3622,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           }
           keybindings={keybindings}
           availableEditors={availableEditors}
+          browserPreviewOpen={browserPreviewVisible}
           diffToggleShortcutLabel={diffPanelShortcutLabel}
           gitCwd={gitCwd}
           diffOpen={diffOpen}
@@ -3490,6 +3632,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
+          onBrowserPreviewPressedChange={setBrowserPreviewPressed}
           onToggleDiff={onToggleDiff}
         />
       </header>
@@ -4084,6 +4227,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
+
+        {browserPreviewVisible ? (
+          <BrowserPreviewPanel
+            state={browserPreviewState}
+            width={browserPreviewPanelWidth}
+            preferredUrl={detectedBrowserPreviewUrl}
+            workspaceRoot={activeProjectCwd}
+            onClose={closeBrowserPreview}
+            onWidthChange={setBrowserPreviewPanelWidth}
+          />
+        ) : null}
 
         {/* Plan sidebar */}
         {planSidebarOpen ? (

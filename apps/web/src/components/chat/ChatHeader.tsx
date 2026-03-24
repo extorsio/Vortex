@@ -6,7 +6,8 @@ import {
 } from "@t3tools/contracts";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
-import { DiffIcon } from "lucide-react";
+import { DiffIcon, GlobeIcon } from "lucide-react";
+import { isElectron } from "~/env";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -24,6 +25,7 @@ interface ChatHeaderProps {
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
+  browserPreviewOpen: boolean;
   diffToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffOpen: boolean;
@@ -31,6 +33,7 @@ interface ChatHeaderProps {
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
+  onBrowserPreviewPressedChange: (pressed: boolean) => void;
   onToggleDiff: () => void;
 }
 
@@ -44,6 +47,7 @@ export const ChatHeader = memo(function ChatHeader({
   preferredScriptId,
   keybindings,
   availableEditors,
+  browserPreviewOpen,
   diffToggleShortcutLabel,
   gitCwd,
   diffOpen,
@@ -51,6 +55,7 @@ export const ChatHeader = memo(function ChatHeader({
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
+  onBrowserPreviewPressedChange,
   onToggleDiff,
 }: ChatHeaderProps) {
   return (
@@ -85,6 +90,30 @@ export const ChatHeader = memo(function ChatHeader({
             onUpdateScript={onUpdateProjectScript}
             onDeleteScript={onDeleteProjectScript}
           />
+        )}
+        {isElectron && activeProjectName && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className="shrink-0"
+                  pressed={browserPreviewOpen}
+                  onPressedChange={onBrowserPreviewPressedChange}
+                  aria-label={browserPreviewOpen ? "Close browser preview" : "Open browser preview"}
+                  variant="outline"
+                  size="xs"
+                >
+                  <GlobeIcon className="size-3" />
+                  <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
+                    Browser
+                  </span>
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {browserPreviewOpen ? "Hide browser preview" : "Show browser preview"}
+            </TooltipPopup>
+          </Tooltip>
         )}
         {activeProjectName && (
           <OpenInPicker

@@ -20,6 +20,7 @@ import { clearPromotedDraftThreads, useComposerDraftStore } from "../composerDra
 import { useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { terminalRunningSubprocessFromEvent } from "../terminalActivity";
+import { useBrowserPreviewStore } from "../browserPreviewStore";
 import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { projectQueryKeys } from "../lib/projectReactQuery";
@@ -217,6 +218,24 @@ function EventRouter() {
       domainEventFlushThrottler.maybeExecute();
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
+      const browserPreviewStore = useBrowserPreviewStore.getState();
+      if (event.type === "output" && event.data.length > 0) {
+        browserPreviewStore.recordTerminalText(
+          ThreadId.makeUnsafe(event.threadId),
+          event.data,
+          event.createdAt,
+        );
+      } else if (
+        (event.type === "started" || event.type === "restarted") &&
+        event.snapshot.history.length > 0
+      ) {
+        browserPreviewStore.recordTerminalText(
+          ThreadId.makeUnsafe(event.threadId),
+          event.snapshot.history,
+          event.createdAt,
+        );
+      }
+
       const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);
       if (hasRunningSubprocess === null) {
         return;

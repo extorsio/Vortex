@@ -9,6 +9,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  type IpcMainInvokeEvent,
   Menu,
   nativeImage,
   nativeTheme,
@@ -43,6 +44,10 @@ import {
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
+import {
+  PreviewBrowserController,
+  createClosedBrowserPreviewState,
+} from "./previewBrowserController";
 
 syncShellEnvironment();
 
@@ -56,6 +61,15 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+const BROWSER_PREVIEW_STATE_CHANNEL = "desktop:browser-preview-state";
+const BROWSER_PREVIEW_OPEN_CHANNEL = "desktop:browser-preview-open";
+const BROWSER_PREVIEW_CLOSE_CHANNEL = "desktop:browser-preview-close";
+const BROWSER_PREVIEW_NAVIGATE_CHANNEL = "desktop:browser-preview-navigate";
+const BROWSER_PREVIEW_BACK_CHANNEL = "desktop:browser-preview-back";
+const BROWSER_PREVIEW_FORWARD_CHANNEL = "desktop:browser-preview-forward";
+const BROWSER_PREVIEW_RELOAD_CHANNEL = "desktop:browser-preview-reload";
+const BROWSER_PREVIEW_BOUNDS_CHANNEL = "desktop:browser-preview-bounds";
+const BROWSER_PREVIEW_GET_STATE_CHANNEL = "desktop:browser-preview-get-state";
 const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SCHEME = "t3";
@@ -75,10 +89,12 @@ const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DESKTOP_UPDATE_CHANNEL = "latest";
 const DESKTOP_UPDATE_ALLOW_PRERELEASE = false;
+const shouldOpenDevTools = process.env.T3CODE_DESKTOP_OPEN_DEVTOOLS === "1";
 
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
 let mainWindow: BrowserWindow | null = null;
+let browserPreviewController: PreviewBrowserController | null = null;
 let backendProcess: ChildProcess.ChildProcess | null = null;
 let backendPort = 0;
 let backendAuthToken = "";
@@ -725,6 +741,19 @@ function emitUpdateState(): void {
   }
 }
 
+function emitBrowserPreviewState(
+  window: BrowserWindow,
+  state = createClosedBrowserPreviewState(),
+): void {
+  if (window.isDestroyed()) return;
+  window.webContents.send(BROWSER_PREVIEW_STATE_CHANNEL, state);
+}
+
+function emitActiveBrowserPreviewState(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  emitBrowserPreviewState(mainWindow, browserPreviewController?.getState());
+}
+
 function setUpdateState(patch: Partial<DesktopUpdateState>): void {
   updateState = { ...updateState, ...patch };
   emitUpdateState();
@@ -1072,6 +1101,28 @@ async function stopBackendAndWaitForExit(timeoutMs = 5_000): Promise<void> {
 }
 
 function registerIpcHandlers(): void {
+  const requireBrowserPreviewController = (
+    event?: IpcMainInvokeEvent,
+  ): PreviewBrowserController => {
+    const ownerWindow = (event ? BrowserWindow.fromWebContents(event.sender) : null) ?? mainWindow;
+    if (!ownerWindow) {
+      throw new Error("Browser preview is unavailable because no desktop window is active.");
+    }
+    if (
+      !browserPreviewController ||
+      !mainWindow ||
+      mainWindow.isDestroyed() ||
+      mainWindow !== ownerWindow
+    ) {
+      browserPreviewController?.dispose();
+      browserPreviewController = new PreviewBrowserController({
+        window: ownerWindow,
+        onStateChanged: (state) => emitBrowserPreviewState(ownerWindow, state),
+      });
+    }
+    return browserPreviewController;
+  };
+
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async () => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -1211,6 +1262,65 @@ function registerIpcHandlers(): void {
       state: updateState,
     } satisfies DesktopUpdateActionResult;
   });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_OPEN_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_OPEN_CHANNEL, async (event, input: unknown) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.open(
+      typeof input === "object" && input !== null
+        ? (input as Parameters<PreviewBrowserController["open"]>[0])
+        : undefined,
+    );
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_CLOSE_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_CLOSE_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.close();
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_NAVIGATE_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_NAVIGATE_CHANNEL, async (event, input: unknown) => {
+    if (typeof input !== "object" || input === null) {
+      throw new Error("Browser preview navigation input is required.");
+    }
+    const controller = requireBrowserPreviewController(event);
+    return controller.navigate(input as Parameters<PreviewBrowserController["navigate"]>[0]);
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_BACK_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_BACK_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.goBack();
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_FORWARD_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_FORWARD_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.goForward();
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_RELOAD_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_RELOAD_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.reload();
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_BOUNDS_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_BOUNDS_CHANNEL, async (event, bounds: unknown) => {
+    const controller = requireBrowserPreviewController(event);
+    controller.setBounds(
+      typeof bounds === "object" && bounds !== null
+        ? (bounds as Parameters<PreviewBrowserController["setBounds"]>[0])
+        : null,
+    );
+  });
+
+  ipcMain.removeHandler(BROWSER_PREVIEW_GET_STATE_CHANNEL);
+  ipcMain.handle(BROWSER_PREVIEW_GET_STATE_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.getState();
+  });
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {
@@ -1238,6 +1348,12 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  browserPreviewController?.dispose();
+  browserPreviewController = new PreviewBrowserController({
+    window,
+    onStateChanged: (state) => emitBrowserPreviewState(window, state),
   });
 
   window.webContents.on("context-menu", (event, params) => {
@@ -1283,6 +1399,7 @@ function createWindow(): BrowserWindow {
   window.webContents.on("did-finish-load", () => {
     window.setTitle(APP_DISPLAY_NAME);
     emitUpdateState();
+    emitActiveBrowserPreviewState();
   });
   window.once("ready-to-show", () => {
     window.show();
@@ -1290,12 +1407,16 @@ function createWindow(): BrowserWindow {
 
   if (isDevelopment) {
     void window.loadURL(process.env.VITE_DEV_SERVER_URL as string);
-    window.webContents.openDevTools({ mode: "detach" });
+    if (shouldOpenDevTools) {
+      window.webContents.openDevTools({ mode: "detach" });
+    }
   } else {
     void window.loadURL(`${DESKTOP_SCHEME}://app/index.html`);
   }
 
   window.on("closed", () => {
+    browserPreviewController?.dispose();
+    browserPreviewController = null;
     if (mainWindow === window) {
       mainWindow = null;
     }

@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type BrowserPreviewState,
   type ContextMenuItem,
   type NativeApi,
   ServerConfigUpdatedPayload,
@@ -15,6 +16,41 @@ import { WsTransport } from "./wsTransport";
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
+const browserPreviewStateListeners = new Set<(state: BrowserPreviewState) => void>();
+let latestBrowserPreviewState: BrowserPreviewState = {
+  open: false,
+  status: "closed",
+  url: null,
+  title: null,
+  canGoBack: false,
+  canGoForward: false,
+  loading: false,
+  lastError: null,
+  bounds: null,
+  workspaceRoot: null,
+};
+let browserPreviewSubscribed = false;
+
+function notifyBrowserPreviewState(state: BrowserPreviewState): void {
+  latestBrowserPreviewState = state;
+  for (const listener of browserPreviewStateListeners) {
+    try {
+      listener(state);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+}
+
+function ensureBrowserPreviewBridgeSubscription(): void {
+  if (browserPreviewSubscribed) return;
+  const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+  if (!bridgeBrowserPreview) return;
+  browserPreviewSubscribed = true;
+  bridgeBrowserPreview.onStateChanged((state) => {
+    notifyBrowserPreviewState(state);
+  });
+}
 
 /**
  * Subscribe to the server welcome message. If a welcome was already received
@@ -62,6 +98,21 @@ export function onServerConfigUpdated(
   };
 }
 
+export function onBrowserPreviewState(listener: (state: BrowserPreviewState) => void): () => void {
+  browserPreviewStateListeners.add(listener);
+  ensureBrowserPreviewBridgeSubscription();
+
+  try {
+    listener(latestBrowserPreviewState);
+  } catch {
+    // Swallow listener errors
+  }
+
+  return () => {
+    browserPreviewStateListeners.delete(listener);
+  };
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
@@ -87,6 +138,7 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
+  ensureBrowserPreviewBridgeSubscription();
 
   const api: NativeApi = {
     dialogs: {
@@ -160,6 +212,79 @@ export function createWsNativeApi(): NativeApi {
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
+    },
+    browserPreview: {
+      open: async (input) => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.open(input);
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      close: async () => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.close();
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      navigate: async (input) => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.navigate(input);
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      goBack: async () => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.goBack();
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      goForward: async () => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.goForward();
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      reload: async () => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.reload();
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      setBounds: async (bounds) => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return;
+        }
+        await bridgeBrowserPreview.setBounds(bounds);
+      },
+      getState: async () => {
+        const bridgeBrowserPreview = window.desktopBridge?.browserPreview;
+        if (!bridgeBrowserPreview) {
+          return latestBrowserPreviewState;
+        }
+        const state = await bridgeBrowserPreview.getState();
+        notifyBrowserPreviewState(state);
+        return state;
+      },
+      onStateChanged: (callback) => onBrowserPreviewState(callback),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

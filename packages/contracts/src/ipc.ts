@@ -94,6 +94,38 @@ export interface DesktopUpdateActionResult {
   state: DesktopUpdateState;
 }
 
+export interface BrowserPreviewBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type BrowserPreviewStatus = "closed" | "idle" | "loading" | "ready" | "error";
+
+export interface BrowserPreviewState {
+  open: boolean;
+  status: BrowserPreviewStatus;
+  url: string | null;
+  title: string | null;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  loading: boolean;
+  lastError: string | null;
+  bounds: BrowserPreviewBounds | null;
+  workspaceRoot: string | null;
+}
+
+export interface BrowserPreviewOpenInput {
+  url?: string;
+  workspaceRoot?: string | null;
+}
+
+export interface BrowserPreviewNavigateInput {
+  url: string;
+  workspaceRoot?: string | null;
+}
+
 export interface DesktopBridge {
   getWsUrl: () => string | null;
   pickFolder: () => Promise<string | null>;
@@ -109,6 +141,17 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  browserPreview: {
+    open: (input?: BrowserPreviewOpenInput) => Promise<BrowserPreviewState>;
+    close: () => Promise<BrowserPreviewState>;
+    navigate: (input: BrowserPreviewNavigateInput) => Promise<BrowserPreviewState>;
+    goBack: () => Promise<BrowserPreviewState>;
+    goForward: () => Promise<BrowserPreviewState>;
+    reload: () => Promise<BrowserPreviewState>;
+    setBounds: (bounds: BrowserPreviewBounds | null) => Promise<void>;
+    getState: () => Promise<BrowserPreviewState>;
+    onStateChanged: (listener: (state: BrowserPreviewState) => void) => () => void;
+  };
 }
 
 export interface NativeApi {
@@ -159,6 +202,17 @@ export interface NativeApi {
   server: {
     getConfig: () => Promise<ServerConfig>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+  };
+  browserPreview: {
+    open: (input?: BrowserPreviewOpenInput) => Promise<BrowserPreviewState>;
+    close: () => Promise<BrowserPreviewState>;
+    navigate: (input: BrowserPreviewNavigateInput) => Promise<BrowserPreviewState>;
+    goBack: () => Promise<BrowserPreviewState>;
+    goForward: () => Promise<BrowserPreviewState>;
+    reload: () => Promise<BrowserPreviewState>;
+    setBounds: (bounds: BrowserPreviewBounds | null) => Promise<void>;
+    getState: () => Promise<BrowserPreviewState>;
+    onStateChanged: (listener: (state: BrowserPreviewState) => void) => () => void;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

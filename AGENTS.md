@@ -1,104 +1,64 @@
 # AGENTS.md
 
-## Task Completion Requirements
+## Identity
 
-- All of `bun fmt`, `bun lint`, and `bun typecheck` must pass before considering tasks completed.
-- NEVER run `bun test`. Always use `bun run test` (runs Vitest).
+- This repo is `Vortex`, a fork of `T3 Code`.
+- `origin` is `extorsio/Vortex`; `upstream` is `pingdotgg/t3code`.
+- If code or docs still say `T3 Code`, treat that as upstream naming, not a different product.
 
-## Project Snapshot
+## Completion Rules
 
-T3 Code is a minimal web GUI for using coding agents like Codex and Claude.
+- Before finishing, run `bun fmt`, `bun lint`, and `bun typecheck`.
+- Never run `bun test`; always use `bun run test`.
+- For desktop changes, also run `bun run smoke-test` inside `apps/desktop`.
 
-This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
+## Product Snapshot
 
-## Core Priorities
-
-1. Performance first.
-2. Reliability first.
-3. Keep behavior predictable under load and during failures (session restarts, reconnects, partial streams).
-
-If a tradeoff is required, choose correctness and robustness over short-term convenience.
-
-## Maintainability
-
-Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
+- Vortex is a web/desktop GUI for coding agents like Codex and Claude.
+- Core priorities: performance, reliability, and predictable behavior under failures/reconnects.
+- Prefer maintainable changes; extract shared logic instead of duplicating local fixes.
 
 ## Package Roles
 
-- `apps/server`: Node.js WebSocket server. Wraps Codex app-server (JSON-RPC over stdio), serves the React web app, and manages provider sessions.
-- `apps/web`: React/Vite UI. Owns session UX, conversation/event rendering, and client-side state. Connects to the server via WebSocket.
-- `packages/contracts`: Shared effect/Schema schemas and TypeScript contracts for provider events, WebSocket protocol, and model/session types. Keep this package schema-only — no runtime logic.
-- `packages/shared`: Shared runtime utilities consumed by both server and web. Uses explicit subpath exports (e.g. `@t3tools/shared/git`) — no barrel index.
+- `apps/server`: WebSocket server, Codex app-server broker, session/runtime orchestration.
+- `apps/web`: React/Vite client, conversation UX, state projection, desktop-aware UI.
+- `apps/desktop`: Electron shell, preload bridge, native desktop integrations.
+- `packages/contracts`: schema/types only; shared IPC, WS, orchestration contracts.
+- `packages/shared`: shared runtime utilities via explicit subpath exports.
 
-## Codex App Server (Important)
+## Codex-First Notes
 
-T3 Code is currently Codex-first. The server starts `codex app-server` (JSON-RPC over stdio) per provider session, then streams structured events to the browser through WebSocket push messages.
+- The server runs `codex app-server` per provider session over JSON-RPC over stdio.
+- Key files: `apps/server/src/codexAppServerManager.ts`, `providerManager.ts`, `wsServer.ts`.
+- The web app consumes orchestration events from `orchestration.domainEvent`.
 
-How we use it in this codebase:
+## Fork-Specific Changes Already Landed
 
-- Session startup/resume and turn lifecycle are brokered in `apps/server/src/codexAppServerManager.ts`.
-- Provider dispatch and thread event logging are coordinated in `apps/server/src/providerManager.ts`.
-- WebSocket server routes NativeApi methods in `apps/server/src/wsServer.ts`.
-- Web app consumes orchestration domain events via WebSocket push on channel `orchestration.domainEvent` (provider runtime activity is projected into orchestration events server-side).
+- Desktop now has an integrated browser preview docked on the right side of chat.
+- This feature is desktop-only in v1 and is user-facing only; agent browser control is not wired yet.
+- Use Electron `WebContentsView`, not WebView2, `iframe`, or Electron `webview`.
+- Future agent control should prefer a Playwright-compatible tool layer.
 
-Docs:
+## Browser Preview Map
 
-- Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
+- `apps/desktop/src/previewBrowserController.ts`: owns `WebContentsView`, state, bounds, URL safety.
+- `apps/desktop/src/main.ts` and `preload.ts`: IPC handlers and `desktopBridge.browserPreview`.
+- `packages/contracts/src/ipc.ts`: `BrowserPreview*` contracts.
+- `apps/web/src/wsNativeApi.ts`: renderer bridge for browser preview actions/state.
+- `apps/web/src/components/chat/BrowserPreviewPanel.tsx`: toolbar, URL bar, resize handle, layout sync.
+- `apps/web/src/components/chat/ChatHeader.tsx` and `apps/web/src/components/ChatView.tsx`: toggle/open logic.
+- `apps/web/src/browserPreview.ts`, `browserPreviewStore.ts`, `routes/__root.tsx`: detect preview URLs from assistant messages and terminal output.
 
-## Reference Repos
+## Browser Preview Behavior
 
-- Open-source Codex repo: https://github.com/openai/codex
-- Codex-Monitor (Tauri, feature-complete, strong reference implementation): https://github.com/Dimillian/CodexMonitor
+- Prefer the latest thread URL in this order: `localhost`, `127.0.0.1`, then other `http(s)`.
+- Allow only `http:` and `https:` in v1.
+- Use a persistent Electron session partition per workspace so cookies/login survive restarts.
+- Block unsafe new windows/downloads; external navigation goes through Electron shell rules.
+- DevTools should not auto-open unless `T3CODE_DESKTOP_OPEN_DEVTOOLS=1`.
 
-Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
+## Important Gotcha
 
-## Desktop Browser Preview
-
-The desktop app now includes an integrated browser preview panel docked on the right side of the chat UI. This feature is desktop-only in v1.
-
-Implementation decisions:
-
-- Use Electron `WebContentsView` for the embedded browser surface.
-- Do NOT use WebView2 as the base implementation. This repo already runs on Electron and needs a cross-platform solution.
-- Do NOT use `iframe`/embedded remote web content inside the React tree for this feature. The real browser surface is created by Electron and positioned over the reserved UI area.
-- The current preview feature is user-facing only. It is intentionally not wired into agent tools yet.
-- If browser control for agents is added later, prefer a Playwright-compatible tool layer instead of baking automation logic into the preview UI.
-
-Architecture overview:
-
-- `apps/desktop/src/previewBrowserController.ts`: owns the lifecycle of the Electron `WebContentsView`, preview state, bounds syncing, URL validation, and security restrictions.
-- `apps/desktop/src/main.ts`: creates the controller, wires IPC handlers, and forwards browser preview state events to the renderer.
-- `apps/desktop/src/preload.ts`: exposes the desktop bridge methods under `desktopBridge.browserPreview`.
-- `packages/contracts/src/ipc.ts`: shared contract for `BrowserPreviewBounds`, `BrowserPreviewState`, `BrowserPreviewStatus`, and the browser preview desktop/native APIs.
-- `apps/web/src/wsNativeApi.ts`: exposes the browser preview API to the web app and manages renderer-side state subscriptions.
-- `apps/web/src/components/chat/BrowserPreviewPanel.tsx`: right-hand UI panel with toolbar, address bar, resize handle, and bounds syncing back to Electron.
-- `apps/web/src/components/chat/ChatHeader.tsx`: entry point for toggling the browser panel from the chat header.
-- `apps/web/src/components/ChatView.tsx`: coordinates preview open/close state, selected thread context, and initial URL selection.
-- `apps/web/src/browserPreview.ts`: shared URL extraction and prioritization logic for preview candidates.
-- `apps/web/src/browserPreviewStore.ts`: stores preview URL observations collected from thread terminal output/history.
-- `apps/web/src/routes/__root.tsx`: feeds terminal events into the preview URL observation store.
-
-Current UX behavior:
-
-- The browser panel is shown from a `Browser` button in the chat header.
-- The preview prefers the latest localhost/dev URL seen in the active thread.
-- URL priority is: `localhost`, then `127.0.0.1`, then other `http(s)` URLs.
-- If no URL is detected, the panel opens empty and the user can type one manually.
-- Preview state includes `open`, `url`, `title`, `loading`, `canGoBack`, `canGoForward`, and `lastError`.
-- The preview uses a dedicated persistent Electron session partition per workspace so cookies/login state survive restarts.
-
-Security and platform notes:
-
-- Only `http:` and `https:` URLs are allowed in v1.
-- New windows and downloads are restricted; external navigation uses Electron shell opening rules.
-- Keep `nodeIntegration` disabled and `contextIsolation` enabled for desktop surfaces.
-- DevTools should not auto-open during normal development. The current behavior is gated behind `T3CODE_DESKTOP_OPEN_DEVTOOLS=1`.
-
-Testing notes:
-
-- Browser preview logic has coverage in `apps/desktop/src/previewBrowserController.test.ts`, `apps/web/src/browserPreview.test.ts`, and `apps/web/src/wsNativeApi.test.ts`.
-- When validating desktop changes, use `bun run smoke-test` in `apps/desktop` in addition to the repo-wide `bun fmt`, `bun lint`, and `bun typecheck`.
-
-Known implementation gotcha:
-
-- Be careful with Zustand selectors in preview-related React code. Returning a fresh array/object from a selector can trigger React `Maximum update depth exceeded` loops. Prefer stable empty constants or shallow-safe selectors where appropriate.
+- Be careful with Zustand selectors in preview-related React code.
+- Returning fresh arrays/objects from selectors can trigger `Maximum update depth exceeded`.
+- Prefer stable empty constants or shallow-safe selectors.

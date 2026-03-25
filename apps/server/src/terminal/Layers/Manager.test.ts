@@ -665,10 +665,11 @@ describe("TerminalManager", () => {
     expect(ptyAdapter.spawnInputs[0]?.shell).toBe("/definitely/missing-shell");
 
     if (process.platform === "win32") {
+      const fallbackShellNames = ptyAdapter.spawnInputs.map((input) =>
+        path.basename(input.shell).toLowerCase(),
+      );
       expect(
-        ptyAdapter.spawnInputs.some(
-          (input) => input.shell === "cmd.exe" || input.shell === "powershell.exe",
-        ),
+        fallbackShellNames.some((shell) => shell === "cmd.exe" || shell === "powershell.exe"),
       ).toBe(true);
     } else {
       expect(

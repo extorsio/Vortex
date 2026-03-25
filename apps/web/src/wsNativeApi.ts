@@ -148,9 +148,9 @@ export function createWsNativeApi(): NativeApi {
         listener(payload);
       } catch {
         // Swallow listener errors
-        }
       }
-    });
+    }
+  });
 
   const api: NativeApi = {
     dialogs: {

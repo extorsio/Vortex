@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId, type BrowserElementContextDraft } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -59,6 +59,51 @@ function makeTerminalContext(input: {
     lineEnd: input.lineEnd ?? 5,
     text: input.text ?? "git status\nOn branch main",
     createdAt: "2026-03-13T12:00:00.000Z",
+  };
+}
+
+function makeBrowserElementContext(input: {
+  id: string;
+  imageAttachmentId?: string | null;
+  selectorLabel?: string;
+  domPath?: string;
+  pageUrl?: string | null;
+}): BrowserElementContextDraft {
+  return {
+    id: input.id,
+    imageAttachmentId: input.imageAttachmentId ?? null,
+    selectorLabel: input.selectorLabel ?? "canvas#game",
+    tagName: "canvas",
+    domPath: input.domPath ?? "body > main > canvas#game",
+    boundingBox: { x: 10, y: 20, width: 300, height: 240 },
+    textPreview: "Scoreboard",
+    attributes: { id: "game" },
+    accessibility: {
+      role: "img",
+      name: "Snake board",
+      description: null,
+      value: null,
+      checked: null,
+      disabled: null,
+      expanded: null,
+      selected: null,
+    },
+    styles: {
+      display: "block",
+      position: "relative",
+      width: "300px",
+      height: "240px",
+      color: null,
+      backgroundColor: "rgb(0, 0, 0)",
+      fontSize: null,
+      fontWeight: null,
+      borderRadius: null,
+      zIndex: null,
+      opacity: "1",
+    },
+    pageUrl: input.pageUrl ?? "http://localhost:3000/",
+    pageTitle: "Snake",
+    timestamp: "2026-03-24T12:00:00.000Z",
   };
 }
 
@@ -415,6 +460,79 @@ describe("composerDraftStore terminal contexts", () => {
     expect(mergedState.draftsByThreadId[threadId]).toBeUndefined();
     expect(mergedState.draftThreadsByThreadId).toEqual({});
     expect(mergedState.projectDraftThreadIdByProjectId).toEqual({});
+  });
+});
+
+describe("composerDraftStore browser element contexts", () => {
+  const threadId = ThreadId.makeUnsafe("thread-browser-context");
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+  });
+
+  it("deduplicates browser contexts by page and DOM identity", () => {
+    const first = makeBrowserElementContext({ id: "ctx-1" });
+    const duplicate = makeBrowserElementContext({ id: "ctx-2" });
+
+    useComposerDraftStore.getState().addBrowserElementContexts(threadId, [first, duplicate]);
+
+    expect(
+      useComposerDraftStore
+        .getState()
+        .draftsByThreadId[threadId]?.browserElementContexts.map((context) => context.id),
+    ).toEqual(["ctx-1"]);
+  });
+
+  it("clears browser element contexts when clearing composer content", () => {
+    useComposerDraftStore
+      .getState()
+      .addBrowserElementContext(threadId, makeBrowserElementContext({ id: "ctx-1" }));
+
+    useComposerDraftStore.getState().clearComposerContent(threadId);
+
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
+  });
+
+  it("persists and hydrates browser element contexts alongside image drafts", () => {
+    useComposerDraftStore
+      .getState()
+      .addBrowserElementContext(
+        threadId,
+        makeBrowserElementContext({ id: "ctx-1", imageAttachmentId: "img-1" }),
+      );
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persistedState = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+      draftsByThreadId?: Record<string, { browserElementContexts?: BrowserElementContextDraft[] }>;
+    };
+
+    expect(persistedState.draftsByThreadId?.[threadId]?.browserElementContexts).toMatchObject([
+      {
+        id: "ctx-1",
+        imageAttachmentId: "img-1",
+        selectorLabel: "canvas#game",
+      },
+    ]);
+
+    const mergedState = persistApi
+      .getOptions()
+      .merge(persistedState, useComposerDraftStore.getInitialState());
+
+    expect(mergedState.draftsByThreadId[threadId]?.browserElementContexts).toMatchObject([
+      {
+        id: "ctx-1",
+        imageAttachmentId: "img-1",
+        selectorLabel: "canvas#game",
+      },
+    ]);
   });
 });
 

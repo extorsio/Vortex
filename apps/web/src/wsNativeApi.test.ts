@@ -1,5 +1,7 @@
 import {
+  type BrowserElementContext,
   type BrowserPreviewState,
+  type BrowserSelectionState,
   CommandId,
   type ContextMenuItem,
   EventId,
@@ -114,6 +116,15 @@ const closedBrowserPreviewState: BrowserPreviewState = {
   lastError: null,
   bounds: null,
   workspaceRoot: null,
+};
+
+const idleBrowserSelectionState: BrowserSelectionState = {
+  mode: "idle",
+  currentSelection: null,
+  pendingSelectionCount: 0,
+  lastError: null,
+  sharedWithAgent: false,
+  sharedPageSessionMode: "user-session",
 };
 
 beforeEach(() => {
@@ -519,6 +530,93 @@ describe("wsNativeApi", () => {
         open: true,
         status: "ready",
         url: "http://localhost:4173/",
+      }),
+    );
+  });
+
+  it("forwards browser selection bridge calls and replays state changes", async () => {
+    const selectedContext: BrowserElementContext = {
+      id: "browser-element-1",
+      selectorLabel: "canvas#game",
+      tagName: "canvas",
+      domPath: "body > main > canvas#game",
+      boundingBox: { x: 10, y: 20, width: 300, height: 240 },
+      textPreview: null,
+      attributes: { id: "game" },
+      accessibility: {
+        role: "img",
+        name: "Snake board",
+        description: null,
+        value: null,
+        checked: null,
+        disabled: null,
+        expanded: null,
+        selected: null,
+      },
+      styles: {
+        display: "block",
+        position: "relative",
+        width: "300px",
+        height: "240px",
+        color: null,
+        backgroundColor: "rgb(0, 0, 0)",
+        fontSize: null,
+        fontWeight: null,
+        borderRadius: null,
+        zIndex: null,
+        opacity: "1",
+      },
+      pageUrl: "http://localhost:3000/",
+      pageTitle: "Snake",
+      timestamp: "2026-03-24T12:00:00.000Z",
+      screenshotDataUrl: "data:image/png;base64,AAA=",
+    };
+    const onStateChanged = vi.fn<(listener: (state: BrowserSelectionState) => void) => () => void>(
+      (listener) => {
+        listener(idleBrowserSelectionState);
+        listener({
+          ...idleBrowserSelectionState,
+          mode: "selected",
+          currentSelection: selectedContext,
+          pendingSelectionCount: 1,
+        });
+        return () => undefined;
+      },
+    );
+    const browserSelectionBridge = {
+      start: vi.fn().mockResolvedValue({
+        ...idleBrowserSelectionState,
+        mode: "selecting",
+      }),
+      stop: vi.fn().mockResolvedValue(idleBrowserSelectionState),
+      getState: vi.fn().mockResolvedValue(idleBrowserSelectionState),
+      addCurrentSelectionToChat: vi.fn().mockResolvedValue(selectedContext),
+      onStateChanged,
+    };
+    Object.defineProperty(getWindowForTest(), "desktopBridge", {
+      configurable: true,
+      writable: true,
+      value: {
+        browserSelection: browserSelectionBridge,
+      },
+    });
+
+    const { createWsNativeApi, onBrowserSelectionState } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+
+    const listener = vi.fn();
+    onBrowserSelectionState(listener);
+
+    await api.browserSelection.start();
+    const context = await api.browserSelection.addCurrentSelectionToChat();
+
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
+    expect(browserSelectionBridge.start).toHaveBeenCalledTimes(1);
+    expect(browserSelectionBridge.addCurrentSelectionToChat).toHaveBeenCalledTimes(1);
+    expect(context).toEqual(selectedContext);
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "idle",
       }),
     );
   });

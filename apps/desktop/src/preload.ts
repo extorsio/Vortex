@@ -20,6 +20,11 @@ const BROWSER_PREVIEW_FORWARD_CHANNEL = "desktop:browser-preview-forward";
 const BROWSER_PREVIEW_RELOAD_CHANNEL = "desktop:browser-preview-reload";
 const BROWSER_PREVIEW_BOUNDS_CHANNEL = "desktop:browser-preview-bounds";
 const BROWSER_PREVIEW_GET_STATE_CHANNEL = "desktop:browser-preview-get-state";
+const BROWSER_SELECTION_STATE_CHANNEL = "desktop:browser-selection-state";
+const BROWSER_SELECTION_START_CHANNEL = "desktop:browser-selection-start";
+const BROWSER_SELECTION_STOP_CHANNEL = "desktop:browser-selection-stop";
+const BROWSER_SELECTION_GET_STATE_CHANNEL = "desktop:browser-selection-get-state";
+const BROWSER_SELECTION_ADD_TO_CHAT_CHANNEL = "desktop:browser-selection-add-to-chat";
 const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
 
 contextBridge.exposeInMainWorld("desktopBridge", {
@@ -72,6 +77,23 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.on(BROWSER_PREVIEW_STATE_CHANNEL, wrappedListener);
       return () => {
         ipcRenderer.removeListener(BROWSER_PREVIEW_STATE_CHANNEL, wrappedListener);
+      };
+    },
+  },
+  browserSelection: {
+    start: () => ipcRenderer.invoke(BROWSER_SELECTION_START_CHANNEL),
+    stop: () => ipcRenderer.invoke(BROWSER_SELECTION_STOP_CHANNEL),
+    getState: () => ipcRenderer.invoke(BROWSER_SELECTION_GET_STATE_CHANNEL),
+    addCurrentSelectionToChat: () => ipcRenderer.invoke(BROWSER_SELECTION_ADD_TO_CHAT_CHANNEL),
+    onStateChanged: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
+        if (typeof state !== "object" || state === null) return;
+        listener(state as Parameters<typeof listener>[0]);
+      };
+
+      ipcRenderer.on(BROWSER_SELECTION_STATE_CHANNEL, wrappedListener);
+      return () => {
+        ipcRenderer.removeListener(BROWSER_SELECTION_STATE_CHANNEL, wrappedListener);
       };
     },
   },

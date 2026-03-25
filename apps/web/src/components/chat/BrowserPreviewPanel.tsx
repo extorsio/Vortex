@@ -1,7 +1,8 @@
-import type { BrowserPreviewState } from "@t3tools/contracts";
+import type { BrowserPreviewState, BrowserSelectionState } from "@t3tools/contracts";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
+  CrosshairIcon,
   ExternalLinkIcon,
   GlobeIcon,
   RefreshCwIcon,
@@ -48,6 +49,7 @@ function normalizeBounds(bounds: { x: number; y: number; width: number; height: 
 
 interface BrowserPreviewPanelProps {
   state: BrowserPreviewState;
+  selectionState: BrowserSelectionState;
   width: number;
   preferredUrl: string | null;
   workspaceRoot: string | null;
@@ -57,6 +59,7 @@ interface BrowserPreviewPanelProps {
 
 export function BrowserPreviewPanel({
   state,
+  selectionState,
   width,
   preferredUrl,
   workspaceRoot,
@@ -311,6 +314,27 @@ export function BrowserPreviewPanel({
           </div>
 
           <Button
+            size="sm"
+            variant={selectionState.mode === "selecting" ? "default" : "outline"}
+            onClick={() => {
+              const api = readNativeApi();
+              if (!api) return;
+              if (selectionState.mode === "selecting") {
+                void api.browserSelection.stop();
+                return;
+              }
+              void api.browserSelection.start();
+            }}
+            disabled={!state.url || state.loading || state.status === "error"}
+            className="h-8 gap-1.5 px-2"
+          >
+            <CrosshairIcon className="size-3.5" />
+            <span className="hidden sm:inline">
+              {selectionState.mode === "selecting" ? "Selecting" : "Add to chat"}
+            </span>
+          </Button>
+
+          <Button
             size="icon-xs"
             variant="outline"
             onClick={() => {
@@ -332,6 +356,27 @@ export function BrowserPreviewPanel({
         {state.lastError ? (
           <div className="border-b border-border/70 bg-destructive/8 px-3 py-2 text-xs text-destructive-foreground">
             {state.lastError}
+          </div>
+        ) : null}
+
+        {selectionState.mode !== "idle" || selectionState.lastError ? (
+          <div
+            className={cn(
+              "border-b px-3 py-2 text-xs",
+              selectionState.lastError
+                ? "border-destructive/40 bg-destructive/8 text-destructive-foreground"
+                : "border-sky-500/20 bg-sky-500/8 text-foreground/85",
+            )}
+          >
+            {selectionState.lastError
+              ? selectionState.lastError
+              : selectionState.mode === "selecting"
+                ? "Hover and click an element to add it to the chat. Press Esc to cancel."
+                : selectionState.pendingSelectionCount > 0
+                  ? `${selectionState.pendingSelectionCount} element ${
+                      selectionState.pendingSelectionCount === 1 ? "queued" : "queued"
+                    } for the chat.`
+                  : "Element captured and ready for the chat."}
           </div>
         ) : null}
 

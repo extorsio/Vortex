@@ -1,6 +1,8 @@
 import {
   type ApprovalRequestId,
+  type BrowserElementContextDraft,
   type BrowserPreviewState,
+  type BrowserSelectionState,
   DEFAULT_MODEL_BY_PROVIDER,
   type ClaudeCodeEffort,
   type MessageId,
@@ -139,6 +141,13 @@ import {
   useComposerThreadDraft,
 } from "../composerDraftStore";
 import {
+  appendBrowserElementContextsToPrompt,
+  browserElementContextDedupKey,
+  browserElementContextToComposerImage,
+  formatBrowserElementChipLabel,
+  toBrowserElementContextDraft,
+} from "../browserElementContext";
+import {
   appendTerminalContextsToPrompt,
   formatTerminalContextLabel,
   insertInlineTerminalContextPlaceholder,
@@ -219,6 +228,14 @@ const CLOSED_BROWSER_PREVIEW_STATE: BrowserPreviewState = {
   bounds: null,
   workspaceRoot: null,
 };
+const IDLE_BROWSER_SELECTION_STATE: BrowserSelectionState = {
+  mode: "idle",
+  currentSelection: null,
+  pendingSelectionCount: 0,
+  lastError: null,
+  sharedWithAgent: false,
+  sharedPageSessionMode: "user-session",
+};
 
 function formatOutgoingPrompt(params: {
   provider: ProviderKind;
@@ -288,14 +305,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
+  const composerBrowserElementContexts = composerDraft.browserElementContexts;
   const composerSendState = useMemo(
     () =>
       deriveComposerSendState({
         prompt,
         imageCount: composerImages.length,
         terminalContexts: composerTerminalContexts,
+        browserElementContextCount: composerBrowserElementContexts.length,
       }),
-    [composerImages.length, composerTerminalContexts, prompt],
+    [
+      composerBrowserElementContexts.length,
+      composerImages.length,
+      composerTerminalContexts,
+      prompt,
+    ],
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -308,6 +332,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
+  const addComposerDraftBrowserElementContext = useComposerDraftStore(
+    (store) => store.addBrowserElementContext,
+  );
+  const addComposerDraftBrowserElementContexts = useComposerDraftStore(
+    (store) => store.addBrowserElementContexts,
+  );
+  const removeComposerDraftBrowserElementContext = useComposerDraftStore(
+    (store) => store.removeBrowserElementContext,
+  );
   const insertComposerDraftTerminalContext = useComposerDraftStore(
     (store) => store.insertTerminalContext,
   );
@@ -347,6 +380,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
+  const composerBrowserElementContextsRef = useRef<BrowserElementContextDraft[]>(
+    composerBrowserElementContexts,
+  );
   const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
     Record<ThreadId, string | null>
   >({});
@@ -403,6 +439,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [browserPreviewState, setBrowserPreviewState] = useState<BrowserPreviewState>(
     CLOSED_BROWSER_PREVIEW_STATE,
   );
+  const [browserSelectionState, setBrowserSelectionState] = useState<BrowserSelectionState>(
+    IDLE_BROWSER_SELECTION_STATE,
+  );
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const [messagesScrollElement, setMessagesScrollElement] = useState<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -420,6 +459,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerFormHeightRef = useRef(0);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
+  const browserSelectionDrainLockRef = useRef(false);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
@@ -468,11 +508,29 @@ export default function ChatView({ threadId }: ChatViewProps) {
     },
     [addComposerDraftTerminalContexts, threadId],
   );
+  const addComposerBrowserElementContextToDraft = useCallback(
+    (context: BrowserElementContextDraft) => {
+      addComposerDraftBrowserElementContext(threadId, context);
+    },
+    [addComposerDraftBrowserElementContext, threadId],
+  );
+  const addComposerBrowserElementContextsToDraft = useCallback(
+    (contexts: BrowserElementContextDraft[]) => {
+      addComposerDraftBrowserElementContexts(threadId, contexts);
+    },
+    [addComposerDraftBrowserElementContexts, threadId],
+  );
   const removeComposerImageFromDraft = useCallback(
     (imageId: string) => {
       removeComposerDraftImage(threadId, imageId);
     },
     [removeComposerDraftImage, threadId],
+  );
+  const removeComposerBrowserElementContextFromDraft = useCallback(
+    (contextId: string) => {
+      removeComposerDraftBrowserElementContext(threadId, contextId);
+    },
+    [removeComposerDraftBrowserElementContext, threadId],
   );
   const removeComposerTerminalContextFromDraft = useCallback(
     (contextId: string) => {
@@ -1158,6 +1216,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => new Set(nonPersistedComposerImageIds),
     [nonPersistedComposerImageIds],
   );
+  const composerBrowserImageIdSet = useMemo(
+    () =>
+      new Set(
+        composerBrowserElementContexts.flatMap((context) =>
+          context.imageAttachmentId ? [context.imageAttachmentId] : [],
+        ),
+      ),
+    [composerBrowserElementContexts],
+  );
+  const visibleComposerImages = useMemo(
+    () => composerImages.filter((image) => !composerBrowserImageIdSet.has(image.id)),
+    [composerBrowserImageIdSet, composerImages],
+  );
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
   const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
   const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
@@ -1190,6 +1261,35 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const unsubscribe = api.browserPreview.onStateChanged((state) => {
       if (disposed) return;
       setBrowserPreviewState(state);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isElectron) {
+      return;
+    }
+    const api = readNativeApi();
+    if (!api) {
+      return;
+    }
+
+    let disposed = false;
+    void api.browserSelection
+      .getState()
+      .then((state) => {
+        if (disposed) return;
+        setBrowserSelectionState(state);
+      })
+      .catch(() => undefined);
+
+    const unsubscribe = api.browserSelection.onStateChanged((state) => {
+      if (disposed) return;
+      setBrowserSelectionState(state);
     });
 
     return () => {
@@ -1239,8 +1339,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const api = readNativeApi();
     if (!api) {
       setBrowserPreviewState(CLOSED_BROWSER_PREVIEW_STATE);
+      setBrowserSelectionState(IDLE_BROWSER_SELECTION_STATE);
       return;
     }
+    void api.browserSelection.stop().catch(() => undefined);
     void api.browserPreview.close().catch(() => undefined);
   }, [setBrowserPreviewPanelOpen]);
 
@@ -2022,6 +2124,86 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [composerTerminalContexts]);
 
   useEffect(() => {
+    composerBrowserElementContextsRef.current = composerBrowserElementContexts;
+  }, [composerBrowserElementContexts]);
+
+  useEffect(() => {
+    if (!isElectron || !activeThread?.id) {
+      return;
+    }
+    const currentSelectionId = browserSelectionState.currentSelection?.id;
+    if (!currentSelectionId || browserSelectionDrainLockRef.current) {
+      return;
+    }
+    const api = readNativeApi();
+    if (!api) {
+      return;
+    }
+
+    browserSelectionDrainLockRef.current = true;
+    void (async () => {
+      try {
+        const selectedContext = await api.browserSelection.addCurrentSelectionToChat();
+        if (!selectedContext) {
+          return;
+        }
+
+        const dedupKey = browserElementContextDedupKey(selectedContext);
+        const alreadyAttached = composerBrowserElementContextsRef.current.some(
+          (context) => browserElementContextDedupKey(context) === dedupKey,
+        );
+        if (alreadyAttached) {
+          toastManager.add({
+            type: "warning",
+            title: "Ese elemento ya estaba en el chat",
+          });
+          return;
+        }
+
+        let imageAttachmentId: string | null = null;
+        if (selectedContext.screenshotDataUrl) {
+          if (composerImagesRef.current.length >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+            toastManager.add({
+              type: "warning",
+              title: "Elemento añadido sin screenshot",
+              description: `Ya llegaste al límite de ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} imágenes adjuntas.`,
+            });
+          } else {
+            const browserImage = await browserElementContextToComposerImage(selectedContext);
+            if (browserImage) {
+              addComposerImage(browserImage);
+              imageAttachmentId = browserImage.id;
+            }
+          }
+        }
+
+        addComposerBrowserElementContextToDraft(
+          toBrowserElementContextDraft(selectedContext, imageAttachmentId),
+        );
+        toastManager.add({
+          type: "success",
+          title: "Elemento añadido al chat",
+          description: formatBrowserElementChipLabel(selectedContext),
+        });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "No pude añadir el elemento al chat",
+          description:
+            error instanceof Error ? error.message : "Ocurrió un error inesperado al capturarlo.",
+        });
+      } finally {
+        browserSelectionDrainLockRef.current = false;
+      }
+    })();
+  }, [
+    activeThread?.id,
+    addComposerBrowserElementContextToDraft,
+    addComposerImage,
+    browserSelectionState.currentSelection?.id,
+  ]);
+
+  useEffect(() => {
     if (!activeThread?.id) return;
     if (activeThread.messages.length === 0) {
       return;
@@ -2388,6 +2570,45 @@ export default function ChatView({ threadId }: ChatViewProps) {
     removeComposerImageFromDraft(imageId);
   };
 
+  const removeComposerBrowserElementContext = useCallback(
+    (contextId: string) => {
+      const context = composerBrowserElementContexts.find((entry) => entry.id === contextId);
+      if (!context) {
+        return;
+      }
+      removeComposerBrowserElementContextFromDraft(contextId);
+      if (!context.imageAttachmentId) {
+        return;
+      }
+      const imageStillReferenced = composerBrowserElementContexts.some(
+        (entry) => entry.id !== contextId && entry.imageAttachmentId === context.imageAttachmentId,
+      );
+      if (!imageStillReferenced) {
+        removeComposerImageFromDraft(context.imageAttachmentId);
+      }
+    },
+    [
+      composerBrowserElementContexts,
+      removeComposerBrowserElementContextFromDraft,
+      removeComposerImageFromDraft,
+    ],
+  );
+
+  const previewComposerBrowserElementContext = useCallback(
+    (contextId: string) => {
+      const context = composerBrowserElementContexts.find((entry) => entry.id === contextId);
+      if (!context?.imageAttachmentId) {
+        return;
+      }
+      const preview = buildExpandedImagePreview(composerImages, context.imageAttachmentId);
+      if (!preview) {
+        return;
+      }
+      setExpandedImage(preview);
+    },
+    [composerBrowserElementContexts, composerImages],
+  );
+
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) {
@@ -2505,6 +2726,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       prompt: promptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
+      browserElementContextCount: composerBrowserElementContexts.length,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -2523,7 +2745,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+      composerImages.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerBrowserElementContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
@@ -2574,9 +2798,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-    const messageTextForSend = appendTerminalContextsToPrompt(
-      promptForSend,
-      composerTerminalContextsSnapshot,
+    const composerBrowserElementContextsSnapshot = [...composerBrowserElementContexts];
+    const imageNameByAttachmentId = new Map(
+      composerImagesSnapshot.map((image) => [image.id, image.name] as const),
+    );
+    const messageTextForSend = appendBrowserElementContextsToPrompt(
+      appendTerminalContextsToPrompt(promptForSend, composerTerminalContextsSnapshot),
+      composerBrowserElementContextsSnapshot,
+      imageNameByAttachmentId,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -2672,10 +2901,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
           firstComposerImageName = firstComposerImage.name;
         }
       }
+      const firstBrowserElementLabel =
+        composerBrowserElementContextsSnapshot.length > 0
+          ? formatBrowserElementChipLabel(composerBrowserElementContextsSnapshot[0]!)
+          : null;
       let titleSeed = trimmed;
       if (!titleSeed) {
         if (firstComposerImageName) {
           titleSeed = `Image: ${firstComposerImageName}`;
+        } else if (firstBrowserElementLabel) {
+          titleSeed = `Browser: ${firstBrowserElementLabel}`;
         } else if (composerTerminalContextsSnapshot.length > 0) {
           titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
         } else {
@@ -2786,7 +3021,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
         !turnStartSucceeded &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0
+        composerTerminalContextsRef.current.length === 0 &&
+        composerBrowserElementContextsRef.current.length === 0
       ) {
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
@@ -2801,6 +3037,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         setComposerCursor(collapseExpandedComposerCursor(promptForSend, promptForSend.length));
         addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
         addComposerTerminalContextsToDraft(composerTerminalContextsSnapshot);
+        addComposerBrowserElementContextsToDraft(composerBrowserElementContextsSnapshot);
         setComposerTrigger(detectComposerTrigger(promptForSend, promptForSend.length));
       }
       setThreadError(
@@ -3785,9 +4022,48 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
                     {!isComposerApprovalState &&
                       pendingUserInputs.length === 0 &&
-                      composerImages.length > 0 && (
+                      composerBrowserElementContexts.length > 0 && (
                         <div className="mb-3 flex flex-wrap gap-2">
-                          {composerImages.map((image) => (
+                          {composerBrowserElementContexts.map((context) => (
+                            <div
+                              key={context.id}
+                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/80 bg-background px-2.5 py-1 text-xs"
+                            >
+                              <button
+                                type="button"
+                                className="max-w-56 truncate font-medium text-foreground/90 hover:text-foreground"
+                                onClick={() => previewComposerBrowserElementContext(context.id)}
+                                disabled={!context.imageAttachmentId}
+                                title={
+                                  context.imageAttachmentId
+                                    ? "Preview element screenshot"
+                                    : "No screenshot available for this element yet"
+                                }
+                              >
+                                {formatBrowserElementChipLabel(context)}
+                              </button>
+                              <span className="truncate text-muted-foreground/70">
+                                {context.pageTitle ?? context.pageUrl ?? "Browser context"}
+                              </span>
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                className="shrink-0"
+                                onClick={() => removeComposerBrowserElementContext(context.id)}
+                                aria-label={`Remove ${formatBrowserElementChipLabel(context)}`}
+                              >
+                                <XIcon />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                    {!isComposerApprovalState &&
+                      pendingUserInputs.length === 0 &&
+                      visibleComposerImages.length > 0 && (
+                        <div className="mb-3 flex flex-wrap gap-2">
+                          {visibleComposerImages.map((image) => (
                             <div
                               key={image.id}
                               className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
@@ -3799,7 +4075,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   aria-label={`Preview ${image.name}`}
                                   onClick={() => {
                                     const preview = buildExpandedImagePreview(
-                                      composerImages,
+                                      visibleComposerImages,
                                       image.id,
                                     );
                                     if (!preview) return;
@@ -4241,6 +4517,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         {browserPreviewVisible ? (
           <BrowserPreviewPanel
             state={browserPreviewState}
+            selectionState={browserSelectionState}
             width={browserPreviewPanelWidth}
             preferredUrl={detectedBrowserPreviewUrl}
             workspaceRoot={activeProjectCwd}

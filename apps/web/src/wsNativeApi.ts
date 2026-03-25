@@ -1,8 +1,10 @@
 import {
+  type BrowserElementContext,
   type GitActionProgressEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   type BrowserPreviewState,
+  type BrowserSelectionState,
   type ContextMenuItem,
   type NativeApi,
   ServerConfigUpdatedPayload,
@@ -18,6 +20,7 @@ let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
 const browserPreviewStateListeners = new Set<(state: BrowserPreviewState) => void>();
+const browserSelectionStateListeners = new Set<(state: BrowserSelectionState) => void>();
 let latestBrowserPreviewState: BrowserPreviewState = {
   open: false,
   status: "closed",
@@ -30,11 +33,31 @@ let latestBrowserPreviewState: BrowserPreviewState = {
   bounds: null,
   workspaceRoot: null,
 };
+let latestBrowserSelectionState: BrowserSelectionState = {
+  mode: "idle",
+  currentSelection: null,
+  pendingSelectionCount: 0,
+  lastError: null,
+  sharedWithAgent: false,
+  sharedPageSessionMode: "user-session",
+};
 let browserPreviewSubscribed = false;
+let browserSelectionSubscribed = false;
 
 function notifyBrowserPreviewState(state: BrowserPreviewState): void {
   latestBrowserPreviewState = state;
   for (const listener of browserPreviewStateListeners) {
+    try {
+      listener(state);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+}
+
+function notifyBrowserSelectionState(state: BrowserSelectionState): void {
+  latestBrowserSelectionState = state;
+  for (const listener of browserSelectionStateListeners) {
     try {
       listener(state);
     } catch {
@@ -50,6 +73,16 @@ function ensureBrowserPreviewBridgeSubscription(): void {
   browserPreviewSubscribed = true;
   bridgeBrowserPreview.onStateChanged((state) => {
     notifyBrowserPreviewState(state);
+  });
+}
+
+function ensureBrowserSelectionBridgeSubscription(): void {
+  if (browserSelectionSubscribed) return;
+  const bridgeBrowserSelection = window.desktopBridge?.browserSelection;
+  if (!bridgeBrowserSelection) return;
+  browserSelectionSubscribed = true;
+  bridgeBrowserSelection.onStateChanged((state) => {
+    notifyBrowserSelectionState(state);
   });
 }
 const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
@@ -115,6 +148,23 @@ export function onBrowserPreviewState(listener: (state: BrowserPreviewState) => 
   };
 }
 
+export function onBrowserSelectionState(
+  listener: (state: BrowserSelectionState) => void,
+): () => void {
+  browserSelectionStateListeners.add(listener);
+  ensureBrowserSelectionBridgeSubscription();
+
+  try {
+    listener(latestBrowserSelectionState);
+  } catch {
+    // Swallow listener errors
+  }
+
+  return () => {
+    browserSelectionStateListeners.delete(listener);
+  };
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
@@ -141,6 +191,7 @@ export function createWsNativeApi(): NativeApi {
     }
   });
   ensureBrowserPreviewBridgeSubscription();
+  ensureBrowserSelectionBridgeSubscription();
   transport.subscribe(WS_CHANNELS.gitActionProgress, (message) => {
     const payload = message.data;
     for (const listener of gitActionProgressListeners) {
@@ -304,6 +355,46 @@ export function createWsNativeApi(): NativeApi {
         return state;
       },
       onStateChanged: (callback) => onBrowserPreviewState(callback),
+    },
+    browserSelection: {
+      start: async () => {
+        const bridgeBrowserSelection = window.desktopBridge?.browserSelection;
+        if (!bridgeBrowserSelection) {
+          return latestBrowserSelectionState;
+        }
+        const state = await bridgeBrowserSelection.start();
+        notifyBrowserSelectionState(state);
+        return state;
+      },
+      stop: async () => {
+        const bridgeBrowserSelection = window.desktopBridge?.browserSelection;
+        if (!bridgeBrowserSelection) {
+          return latestBrowserSelectionState;
+        }
+        const state = await bridgeBrowserSelection.stop();
+        notifyBrowserSelectionState(state);
+        return state;
+      },
+      getState: async () => {
+        const bridgeBrowserSelection = window.desktopBridge?.browserSelection;
+        if (!bridgeBrowserSelection) {
+          return latestBrowserSelectionState;
+        }
+        const state = await bridgeBrowserSelection.getState();
+        notifyBrowserSelectionState(state);
+        return state;
+      },
+      addCurrentSelectionToChat: async (): Promise<BrowserElementContext | null> => {
+        const bridgeBrowserSelection = window.desktopBridge?.browserSelection;
+        if (!bridgeBrowserSelection) {
+          return null;
+        }
+        const selection = await bridgeBrowserSelection.addCurrentSelectionToChat();
+        const state = await bridgeBrowserSelection.getState();
+        notifyBrowserSelectionState(state);
+        return selection;
+      },
+      onStateChanged: (callback) => onBrowserSelectionState(callback),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

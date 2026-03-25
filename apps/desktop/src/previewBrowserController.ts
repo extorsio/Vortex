@@ -1,10 +1,12 @@
 import * as Crypto from "node:crypto";
 
 import type {
+  BrowserElementContext,
   BrowserPreviewBounds,
   BrowserPreviewNavigateInput,
   BrowserPreviewOpenInput,
   BrowserPreviewState,
+  BrowserSelectionState,
 } from "@t3tools/contracts";
 import {
   BrowserWindow,
@@ -14,11 +16,19 @@ import {
   session as ElectronSession,
   shell,
 } from "electron";
+import {
+  getInstallBrowserSelectionScript,
+  parseBrowserSelectionConsoleEvent,
+  STOP_BROWSER_SELECTION_SCRIPT,
+  type BrowserSelectionOverlayPayload,
+} from "./browserSelectionOverlay";
 
 const PREVIEW_DOWNLOAD_BLOCK_MESSAGE =
   "Downloads are not supported in the integrated browser preview yet.";
 const PREVIEW_UNSUPPORTED_URL_MESSAGE =
   "Only http:// and https:// URLs are supported in the integrated browser.";
+const PREVIEW_SELECTION_UNAVAILABLE_MESSAGE =
+  "Open a page in the browser preview before selecting elements.";
 
 export function createClosedBrowserPreviewState(): BrowserPreviewState {
   return {
@@ -35,8 +45,39 @@ export function createClosedBrowserPreviewState(): BrowserPreviewState {
   };
 }
 
+export function createIdleBrowserSelectionState(): BrowserSelectionState {
+  return {
+    mode: "idle",
+    currentSelection: null,
+    pendingSelectionCount: 0,
+    lastError: null,
+    sharedWithAgent: false,
+    sharedPageSessionMode: "user-session",
+  };
+}
+
 function cloneBounds(bounds: BrowserPreviewBounds | null): BrowserPreviewBounds | null {
   return bounds ? { ...bounds } : null;
+}
+
+function cloneSelectionContext(
+  context: BrowserElementContext | null,
+): BrowserElementContext | null {
+  if (!context) return null;
+  return {
+    ...context,
+    boundingBox: context.boundingBox ? { ...context.boundingBox } : null,
+    attributes: { ...context.attributes },
+    accessibility: context.accessibility ? { ...context.accessibility } : null,
+    styles: context.styles ? { ...context.styles } : null,
+  };
+}
+
+function cloneSelectionState(state: BrowserSelectionState): BrowserSelectionState {
+  return {
+    ...state,
+    currentSelection: cloneSelectionContext(state.currentSelection),
+  };
 }
 
 function normalizeBounds(bounds: BrowserPreviewBounds | null): BrowserPreviewBounds | null {
@@ -113,29 +154,40 @@ export function browserPreviewPartitionForWorkspaceRoot(workspaceRoot: string | 
 interface PreviewBrowserControllerOptions {
   window: BrowserWindow;
   onStateChanged: (state: BrowserPreviewState) => void;
+  onSelectionStateChanged: (state: BrowserSelectionState) => void;
 }
 
 export class PreviewBrowserController {
   private readonly window: BrowserWindow;
   private readonly onStateChanged: (state: BrowserPreviewState) => void;
+  private readonly onSelectionStateChanged: (state: BrowserSelectionState) => void;
   private state: BrowserPreviewState = createClosedBrowserPreviewState();
+  private selectionState: BrowserSelectionState = createIdleBrowserSelectionState();
   private bounds: BrowserPreviewBounds | null = null;
   private view: WebContentsView | null = null;
   private sessionPartition: string | null = null;
   private downloadListener: ((event: ElectronEvent, item: DownloadItem) => void) | null = null;
+  private selectionSessionActive = false;
+  private selectionQueue: BrowserElementContext[] = [];
 
   constructor(options: PreviewBrowserControllerOptions) {
     this.window = options.window;
     this.onStateChanged = options.onStateChanged;
+    this.onSelectionStateChanged = options.onSelectionStateChanged;
   }
 
   dispose(): void {
     this.destroyView();
     this.state = createClosedBrowserPreviewState();
+    this.resetSelectionState();
   }
 
   getState(): BrowserPreviewState {
     return { ...this.state, bounds: cloneBounds(this.state.bounds) };
+  }
+
+  getSelectionState(): BrowserSelectionState {
+    return cloneSelectionState(this.selectionState);
   }
 
   async open(input?: BrowserPreviewOpenInput): Promise<BrowserPreviewState> {
@@ -181,6 +233,7 @@ export class PreviewBrowserController {
   async close(): Promise<BrowserPreviewState> {
     this.destroyView();
     this.setState(createClosedBrowserPreviewState());
+    this.resetSelectionState();
     return this.getState();
   }
 
@@ -249,9 +302,88 @@ export class PreviewBrowserController {
     if (!webContents) {
       return this.getState();
     }
+    this.cancelSelectionSession();
     this.setState({ status: "loading", loading: true, lastError: null });
     webContents.reload();
     return this.getState();
+  }
+
+  async startSelection(): Promise<BrowserSelectionState> {
+    const view = this.view;
+    if (!view || !this.state.open || !this.state.url || this.state.status === "error") {
+      this.setSelectionState({
+        mode: "error",
+        currentSelection: null,
+        pendingSelectionCount: 0,
+        lastError: PREVIEW_SELECTION_UNAVAILABLE_MESSAGE,
+      });
+      return this.getSelectionState();
+    }
+
+    this.selectionSessionActive = true;
+    this.selectionQueue = [];
+    this.setSelectionState({
+      mode: "selecting",
+      currentSelection: null,
+      pendingSelectionCount: 0,
+      lastError: null,
+    });
+
+    try {
+      await view.webContents.executeJavaScript(getInstallBrowserSelectionScript(), true);
+    } catch (error) {
+      this.selectionSessionActive = false;
+      this.setSelectionState({
+        mode: "error",
+        currentSelection: null,
+        pendingSelectionCount: 0,
+        lastError:
+          error instanceof Error ? error.message : "Failed to enter browser selection mode.",
+      });
+    }
+
+    return this.getSelectionState();
+  }
+
+  async stopSelection(): Promise<BrowserSelectionState> {
+    this.cancelSelectionSession();
+    return this.getSelectionState();
+  }
+
+  async addCurrentSelectionToChat(): Promise<BrowserElementContext | null> {
+    const nextSelection = this.selectionQueue.shift() ?? null;
+    const nextCurrentSelection = this.selectionQueue[0] ?? null;
+    this.setSelectionState({
+      mode:
+        nextCurrentSelection !== null
+          ? "selected"
+          : this.selectionSessionActive
+            ? "selecting"
+            : "idle",
+      currentSelection: nextCurrentSelection,
+      pendingSelectionCount: this.selectionQueue.length,
+      lastError: null,
+    });
+
+    if (this.selectionSessionActive && this.selectionQueue.length === 0) {
+      const view = this.view;
+      if (view && !view.webContents.isDestroyed()) {
+        try {
+          await view.webContents.executeJavaScript(getInstallBrowserSelectionScript(), true);
+        } catch (error) {
+          this.selectionSessionActive = false;
+          this.setSelectionState({
+            mode: "error",
+            currentSelection: null,
+            pendingSelectionCount: 0,
+            lastError:
+              error instanceof Error ? error.message : "Failed to resume browser selection mode.",
+          });
+        }
+      }
+    }
+
+    return cloneSelectionContext(nextSelection);
   }
 
   setBounds(bounds: BrowserPreviewBounds | null): void {
@@ -338,9 +470,30 @@ export class PreviewBrowserController {
 
     view.webContents.on("will-navigate", rejectUnsafeNavigation);
     view.webContents.on("will-redirect", rejectUnsafeNavigation);
+    view.webContents.on("console-message", (_event, _level, message) => {
+      if (this.view !== view) return;
+      const browserSelectionEvent = parseBrowserSelectionConsoleEvent(message);
+      if (!browserSelectionEvent) return;
+      if (browserSelectionEvent.type === "cancelled") {
+        this.cancelSelectionSession();
+        return;
+      }
+      if (browserSelectionEvent.type === "error") {
+        this.selectionSessionActive = false;
+        this.setSelectionState({
+          mode: "error",
+          currentSelection: null,
+          pendingSelectionCount: 0,
+          lastError: browserSelectionEvent.message,
+        });
+        return;
+      }
+      void this.handleOverlaySelection(browserSelectionEvent.payload);
+    });
     view.webContents.on("did-start-loading", () => {
       if (this.view !== view) return;
       if (!this.state.open) return;
+      this.cancelSelectionSession();
       this.setState({
         status: this.state.url ? "loading" : "idle",
         loading: this.state.url !== null,
@@ -366,10 +519,12 @@ export class PreviewBrowserController {
     });
     view.webContents.on("did-navigate", (_event, url) => {
       if (this.view !== view) return;
+      this.cancelSelectionSession();
       this.syncNavigationState(url);
     });
     view.webContents.on("did-navigate-in-page", (_event, url) => {
       if (this.view !== view) return;
+      this.cancelSelectionSession();
       this.syncNavigationState(url);
     });
     view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
@@ -377,6 +532,7 @@ export class PreviewBrowserController {
       if (errorCode === -3) {
         return;
       }
+      this.cancelSelectionSession();
       this.setState({
         status: "error",
         loading: false,
@@ -405,11 +561,73 @@ export class PreviewBrowserController {
     });
   }
 
+  private async handleOverlaySelection(payload: BrowserSelectionOverlayPayload): Promise<void> {
+    const selection = await this.buildSelectionContext(payload);
+    this.selectionQueue.push(selection);
+    this.setSelectionState({
+      mode: "selected",
+      currentSelection: selection,
+      pendingSelectionCount: this.selectionQueue.length,
+      lastError: null,
+    });
+  }
+
+  private async buildSelectionContext(
+    payload: BrowserSelectionOverlayPayload,
+  ): Promise<BrowserElementContext> {
+    const screenshotDataUrl = await this.captureSelectionScreenshot(payload.boundingBox);
+    return {
+      id: Crypto.randomUUID(),
+      selectorLabel: payload.selectorLabel,
+      tagName: payload.tagName,
+      domPath: payload.domPath,
+      boundingBox: payload.boundingBox ? { ...payload.boundingBox } : null,
+      textPreview: payload.textPreview,
+      attributes: { ...payload.attributes },
+      accessibility: payload.accessibility ? { ...payload.accessibility } : null,
+      styles: payload.styles ? { ...payload.styles } : null,
+      pageUrl: this.view?.webContents.getURL() || this.state.url,
+      pageTitle: this.view?.webContents.getTitle() || this.state.title,
+      timestamp: new Date().toISOString(),
+      screenshotDataUrl,
+    };
+  }
+
+  private async captureSelectionScreenshot(
+    boundingBox: BrowserElementContext["boundingBox"],
+  ): Promise<string | null> {
+    const webContents = this.view?.webContents;
+    if (!webContents || webContents.isDestroyed()) {
+      return null;
+    }
+
+    try {
+      const nativeImage = boundingBox
+        ? await webContents.capturePage({
+            x: Math.max(0, Math.floor(boundingBox.x)),
+            y: Math.max(0, Math.floor(boundingBox.y)),
+            width: Math.max(1, Math.floor(boundingBox.width)),
+            height: Math.max(1, Math.floor(boundingBox.height)),
+          })
+        : await webContents.capturePage();
+      return nativeImage.isEmpty() ? null : nativeImage.toDataURL();
+    } catch {
+      try {
+        const fallbackImage = await webContents.capturePage();
+        return fallbackImage.isEmpty() ? null : fallbackImage.toDataURL();
+      } catch {
+        return null;
+      }
+    }
+  }
+
   private destroyView(): void {
     const view = this.view;
     if (!view) {
       return;
     }
+
+    this.cancelSelectionSession();
 
     if (this.downloadListener && this.sessionPartition) {
       ElectronSession.fromPartition(this.sessionPartition).off(
@@ -434,6 +652,22 @@ export class PreviewBrowserController {
     }
   }
 
+  private cancelSelectionSession(): void {
+    this.selectionSessionActive = false;
+    this.selectionQueue = [];
+    const view = this.view;
+    if (view && !view.webContents.isDestroyed()) {
+      void view.webContents.executeJavaScript(STOP_BROWSER_SELECTION_SCRIPT, true).catch(() => {
+        // Ignore teardown failures during navigation/disposal.
+      });
+    }
+    this.resetSelectionState();
+  }
+
+  private resetSelectionState(): void {
+    this.setSelectionState(createIdleBrowserSelectionState());
+  }
+
   private setState(patch: Partial<BrowserPreviewState> | BrowserPreviewState): void {
     this.state = {
       ...this.state,
@@ -442,5 +676,23 @@ export class PreviewBrowserController {
         "bounds" in patch ? cloneBounds(patch.bounds ?? null) : cloneBounds(this.state.bounds),
     };
     this.onStateChanged(this.getState());
+  }
+
+  private setSelectionState(patch: Partial<BrowserSelectionState> | BrowserSelectionState): void {
+    this.selectionState = {
+      ...this.selectionState,
+      ...patch,
+      currentSelection:
+        "currentSelection" in patch
+          ? cloneSelectionContext(patch.currentSelection ?? null)
+          : cloneSelectionContext(this.selectionState.currentSelection),
+      pendingSelectionCount:
+        typeof patch.pendingSelectionCount === "number"
+          ? patch.pendingSelectionCount
+          : this.selectionQueue.length,
+      sharedWithAgent: false,
+      sharedPageSessionMode: "user-session",
+    };
+    this.onSelectionStateChanged(this.getSelectionState());
   }
 }

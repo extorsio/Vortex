@@ -1,4 +1,5 @@
 import {
+  type BrowserElementContextDraft,
   CODEX_REASONING_EFFORT_OPTIONS,
   type ClaudeCodeEffort,
   type CodexReasoningEffort,
@@ -69,10 +70,60 @@ const PersistedTerminalContextDraft = Schema.Struct({
 });
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
+const PersistedBrowserElementContextDraft = Schema.Struct({
+  id: Schema.String,
+  imageAttachmentId: Schema.NullOr(Schema.String),
+  selectorLabel: Schema.String,
+  tagName: Schema.String,
+  domPath: Schema.String,
+  boundingBox: Schema.NullOr(
+    Schema.Struct({
+      x: Schema.Number,
+      y: Schema.Number,
+      width: Schema.Number,
+      height: Schema.Number,
+    }),
+  ),
+  textPreview: Schema.NullOr(Schema.String),
+  attributes: Schema.Record(Schema.String, Schema.String),
+  accessibility: Schema.NullOr(
+    Schema.Struct({
+      role: Schema.NullOr(Schema.String),
+      name: Schema.NullOr(Schema.String),
+      description: Schema.NullOr(Schema.String),
+      value: Schema.NullOr(Schema.String),
+      checked: Schema.NullOr(Schema.Boolean),
+      disabled: Schema.NullOr(Schema.Boolean),
+      expanded: Schema.NullOr(Schema.Boolean),
+      selected: Schema.NullOr(Schema.Boolean),
+    }),
+  ),
+  styles: Schema.NullOr(
+    Schema.Struct({
+      display: Schema.NullOr(Schema.String),
+      position: Schema.NullOr(Schema.String),
+      width: Schema.NullOr(Schema.String),
+      height: Schema.NullOr(Schema.String),
+      color: Schema.NullOr(Schema.String),
+      backgroundColor: Schema.NullOr(Schema.String),
+      fontSize: Schema.NullOr(Schema.String),
+      fontWeight: Schema.NullOr(Schema.String),
+      borderRadius: Schema.NullOr(Schema.String),
+      zIndex: Schema.NullOr(Schema.String),
+      opacity: Schema.NullOr(Schema.String),
+    }),
+  ),
+  pageUrl: Schema.NullOr(Schema.String),
+  pageTitle: Schema.NullOr(Schema.String),
+  timestamp: Schema.String,
+});
+type PersistedBrowserElementContextDraft = typeof PersistedBrowserElementContextDraft.Type;
+
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
   terminalContexts: Schema.optionalKey(Schema.Array(PersistedTerminalContextDraft)),
+  browserElementContexts: Schema.optionalKey(Schema.Array(PersistedBrowserElementContextDraft)),
   provider: Schema.optionalKey(ProviderKind),
   model: Schema.optionalKey(Schema.String),
   modelOptions: Schema.optionalKey(ProviderModelOptions),
@@ -121,6 +172,7 @@ interface ComposerThreadDraftState {
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   terminalContexts: TerminalContextDraft[];
+  browserElementContexts: BrowserElementContextDraft[];
   provider: ProviderKind | null;
   model: string | null;
   modelOptions: ProviderModelOptions | null;
@@ -203,6 +255,10 @@ interface ComposerDraftStoreState {
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
   removeImage: (threadId: ThreadId, imageId: string) => void;
+  addBrowserElementContext: (threadId: ThreadId, context: BrowserElementContextDraft) => void;
+  addBrowserElementContexts: (threadId: ThreadId, contexts: BrowserElementContextDraft[]) => void;
+  removeBrowserElementContext: (threadId: ThreadId, contextId: string) => void;
+  clearBrowserElementContexts: (threadId: ThreadId) => void;
   insertTerminalContext: (
     threadId: ThreadId,
     prompt: string,
@@ -235,15 +291,18 @@ const EMPTY_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
+const EMPTY_BROWSER_ELEMENT_CONTEXTS: BrowserElementContextDraft[] = [];
 Object.freeze(EMPTY_IMAGES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
+Object.freeze(EMPTY_BROWSER_ELEMENT_CONTEXTS);
 const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   prompt: "",
   images: EMPTY_IMAGES,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
+  browserElementContexts: EMPTY_BROWSER_ELEMENT_CONTEXTS,
   provider: null,
   model: null,
   modelOptions: null,
@@ -258,6 +317,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     nonPersistedImageIds: [],
     persistedAttachments: [],
     terminalContexts: [],
+    browserElementContexts: [],
     provider: null,
     model: null,
     modelOptions: null,
@@ -274,6 +334,12 @@ function composerImageDedupKey(image: ComposerImageAttachment): string {
 
 function terminalContextDedupKey(context: TerminalContextDraft): string {
   return `${context.terminalId}\u0000${context.lineStart}\u0000${context.lineEnd}`;
+}
+
+function browserElementContextDedupKey(
+  context: Pick<BrowserElementContextDraft, "pageUrl" | "domPath" | "selectorLabel">,
+): string {
+  return `${context.pageUrl ?? ""}\u0000${context.domPath}\u0000${context.selectorLabel}`;
 }
 
 function normalizeTerminalContextForThread(
@@ -329,6 +395,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.images.length === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.terminalContexts.length === 0 &&
+    draft.browserElementContexts.length === 0 &&
     draft.provider === null &&
     draft.model === null &&
     draft.modelOptions === null &&
@@ -519,6 +586,125 @@ function normalizePersistedTerminalContextDraft(
   };
 }
 
+function normalizeNullableString(input: unknown): string | null {
+  return typeof input === "string" && input.trim().length > 0 ? input : null;
+}
+
+function normalizeNullableBoolean(input: unknown): boolean | null {
+  return typeof input === "boolean" ? input : null;
+}
+
+function normalizePersistedBrowserElementContextDraft(
+  value: unknown,
+): PersistedBrowserElementContextDraft | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+  const selectorLabel =
+    typeof candidate.selectorLabel === "string" ? candidate.selectorLabel.trim() : "";
+  const tagName = typeof candidate.tagName === "string" ? candidate.tagName.trim() : "";
+  const domPath = typeof candidate.domPath === "string" ? candidate.domPath.trim() : "";
+  const timestamp = typeof candidate.timestamp === "string" ? candidate.timestamp : "";
+  if (
+    id.length === 0 ||
+    selectorLabel.length === 0 ||
+    tagName.length === 0 ||
+    domPath.length === 0 ||
+    timestamp.length === 0
+  ) {
+    return null;
+  }
+
+  const boundingBox =
+    candidate.boundingBox &&
+    typeof candidate.boundingBox === "object" &&
+    Number.isFinite((candidate.boundingBox as { x?: unknown }).x) &&
+    Number.isFinite((candidate.boundingBox as { y?: unknown }).y) &&
+    Number.isFinite((candidate.boundingBox as { width?: unknown }).width) &&
+    Number.isFinite((candidate.boundingBox as { height?: unknown }).height)
+      ? {
+          x: Math.max(0, Math.floor((candidate.boundingBox as { x: number }).x)),
+          y: Math.max(0, Math.floor((candidate.boundingBox as { y: number }).y)),
+          width: Math.max(0, Math.floor((candidate.boundingBox as { width: number }).width)),
+          height: Math.max(0, Math.floor((candidate.boundingBox as { height: number }).height)),
+        }
+      : null;
+  const attributes =
+    candidate.attributes && typeof candidate.attributes === "object"
+      ? Object.fromEntries(
+          Object.entries(candidate.attributes as Record<string, unknown>).flatMap(([key, value]) =>
+            typeof value === "string" && value.trim().length > 0 ? [[key, value]] : [],
+          ),
+        )
+      : {};
+  const accessibility =
+    candidate.accessibility && typeof candidate.accessibility === "object"
+      ? {
+          role: normalizeNullableString((candidate.accessibility as Record<string, unknown>).role),
+          name: normalizeNullableString((candidate.accessibility as Record<string, unknown>).name),
+          description: normalizeNullableString(
+            (candidate.accessibility as Record<string, unknown>).description,
+          ),
+          value: normalizeNullableString(
+            (candidate.accessibility as Record<string, unknown>).value,
+          ),
+          checked: normalizeNullableBoolean(
+            (candidate.accessibility as Record<string, unknown>).checked,
+          ),
+          disabled: normalizeNullableBoolean(
+            (candidate.accessibility as Record<string, unknown>).disabled,
+          ),
+          expanded: normalizeNullableBoolean(
+            (candidate.accessibility as Record<string, unknown>).expanded,
+          ),
+          selected: normalizeNullableBoolean(
+            (candidate.accessibility as Record<string, unknown>).selected,
+          ),
+        }
+      : null;
+  const styles =
+    candidate.styles && typeof candidate.styles === "object"
+      ? {
+          display: normalizeNullableString((candidate.styles as Record<string, unknown>).display),
+          position: normalizeNullableString((candidate.styles as Record<string, unknown>).position),
+          width: normalizeNullableString((candidate.styles as Record<string, unknown>).width),
+          height: normalizeNullableString((candidate.styles as Record<string, unknown>).height),
+          color: normalizeNullableString((candidate.styles as Record<string, unknown>).color),
+          backgroundColor: normalizeNullableString(
+            (candidate.styles as Record<string, unknown>).backgroundColor,
+          ),
+          fontSize: normalizeNullableString((candidate.styles as Record<string, unknown>).fontSize),
+          fontWeight: normalizeNullableString(
+            (candidate.styles as Record<string, unknown>).fontWeight,
+          ),
+          borderRadius: normalizeNullableString(
+            (candidate.styles as Record<string, unknown>).borderRadius,
+          ),
+          zIndex: normalizeNullableString((candidate.styles as Record<string, unknown>).zIndex),
+          opacity: normalizeNullableString((candidate.styles as Record<string, unknown>).opacity),
+        }
+      : null;
+
+  return {
+    id,
+    imageAttachmentId:
+      typeof candidate.imageAttachmentId === "string" ? candidate.imageAttachmentId : null,
+    selectorLabel,
+    tagName,
+    domPath,
+    boundingBox,
+    textPreview: normalizeNullableString(candidate.textPreview),
+    attributes,
+    accessibility,
+    styles,
+    pageUrl: normalizeNullableString(candidate.pageUrl),
+    pageTitle: normalizeNullableString(candidate.pageTitle),
+    timestamp,
+  };
+}
+
 function normalizeDraftThreadEnvMode(
   value: unknown,
   fallbackWorktreePath: string | null,
@@ -653,6 +839,12 @@ function normalizePersistedDraftsByThreadId(
           return normalized ? [normalized] : [];
         })
       : [];
+    const browserElementContexts = Array.isArray(draftCandidate.browserElementContexts)
+      ? draftCandidate.browserElementContexts.flatMap((entry) => {
+          const normalized = normalizePersistedBrowserElementContextDraft(entry);
+          return normalized ? [normalized] : [];
+        })
+      : [];
     const provider = normalizeProviderKind(draftCandidate.provider);
     const model =
       typeof draftCandidate.model === "string"
@@ -676,6 +868,7 @@ function normalizePersistedDraftsByThreadId(
       promptCandidate.length === 0 &&
       attachments.length === 0 &&
       terminalContexts.length === 0 &&
+      browserElementContexts.length === 0 &&
       !provider &&
       !model &&
       modelOptions === null &&
@@ -688,6 +881,7 @@ function normalizePersistedDraftsByThreadId(
       prompt,
       attachments,
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
+      ...(browserElementContexts.length > 0 ? { browserElementContexts } : {}),
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
       ...(modelOptions ? { modelOptions } : {}),
@@ -752,6 +946,7 @@ function partializeComposerDraftStoreState(
       draft.prompt.length === 0 &&
       draft.persistedAttachments.length === 0 &&
       draft.terminalContexts.length === 0 &&
+      draft.browserElementContexts.length === 0 &&
       draft.provider === null &&
       draft.model === null &&
       draft.modelOptions === null &&
@@ -773,6 +968,25 @@ function partializeComposerDraftStoreState(
               terminalLabel: context.terminalLabel,
               lineStart: context.lineStart,
               lineEnd: context.lineEnd,
+            })),
+          }
+        : {}),
+      ...(draft.browserElementContexts.length > 0
+        ? {
+            browserElementContexts: draft.browserElementContexts.map((context) => ({
+              id: context.id,
+              imageAttachmentId: context.imageAttachmentId,
+              selectorLabel: context.selectorLabel,
+              tagName: context.tagName,
+              domPath: context.domPath,
+              boundingBox: context.boundingBox ? { ...context.boundingBox } : null,
+              textPreview: context.textPreview,
+              attributes: { ...context.attributes },
+              accessibility: context.accessibility ? { ...context.accessibility } : null,
+              styles: context.styles ? { ...context.styles } : null,
+              pageUrl: context.pageUrl,
+              pageTitle: context.pageTitle,
+              timestamp: context.timestamp,
             })),
           }
         : {}),
@@ -957,6 +1171,14 @@ function toHydratedThreadDraft(
       persistedDraft.terminalContexts?.map((context) => ({
         ...context,
         text: "",
+      })) ?? [],
+    browserElementContexts:
+      persistedDraft.browserElementContexts?.map((context) => ({
+        ...context,
+        boundingBox: context.boundingBox ? { ...context.boundingBox } : null,
+        attributes: { ...context.attributes },
+        accessibility: context.accessibility ? { ...context.accessibility } : null,
+        styles: context.styles ? { ...context.styles } : null,
       })) ?? [],
     provider: persistedDraft.provider ?? null,
     model: persistedDraft.model ?? null,
@@ -1550,6 +1772,100 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
+      addBrowserElementContext: (threadId, context) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        get().addBrowserElementContexts(threadId, [context]);
+      },
+      addBrowserElementContexts: (threadId, contexts) => {
+        if (threadId.length === 0 || contexts.length === 0) {
+          return;
+        }
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          const existingIds = new Set(existing.browserElementContexts.map((context) => context.id));
+          const existingDedupKeys = new Set(
+            existing.browserElementContexts.map((context) =>
+              browserElementContextDedupKey(context),
+            ),
+          );
+          const acceptedContexts: BrowserElementContextDraft[] = [];
+          for (const context of contexts) {
+            const dedupKey = browserElementContextDedupKey(context);
+            if (existingIds.has(context.id) || existingDedupKeys.has(dedupKey)) {
+              continue;
+            }
+            acceptedContexts.push({
+              ...context,
+              boundingBox: context.boundingBox ? { ...context.boundingBox } : null,
+              attributes: { ...context.attributes },
+              accessibility: context.accessibility ? { ...context.accessibility } : null,
+              styles: context.styles ? { ...context.styles } : null,
+            });
+            existingIds.add(context.id);
+            existingDedupKeys.add(dedupKey);
+          }
+          if (acceptedContexts.length === 0) {
+            return state;
+          }
+          return {
+            draftsByThreadId: {
+              ...state.draftsByThreadId,
+              [threadId]: {
+                ...existing,
+                browserElementContexts: [...existing.browserElementContexts, ...acceptedContexts],
+              },
+            },
+          };
+        });
+      },
+      removeBrowserElementContext: (threadId, contextId) => {
+        if (threadId.length === 0 || contextId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const current = state.draftsByThreadId[threadId];
+          if (!current) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...current,
+            browserElementContexts: current.browserElementContexts.filter(
+              (context) => context.id !== contextId,
+            ),
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
+      clearBrowserElementContexts: (threadId) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        set((state) => {
+          const current = state.draftsByThreadId[threadId];
+          if (!current || current.browserElementContexts.length === 0) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...current,
+            browserElementContexts: [],
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       insertTerminalContext: (threadId, prompt, context, index) => {
         if (threadId.length === 0) {
           return false;
@@ -1737,6 +2053,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             nonPersistedImageIds: [],
             persistedAttachments: [],
             terminalContexts: [],
+            browserElementContexts: [],
           };
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
           if (shouldRemoveDraft(nextDraft)) {

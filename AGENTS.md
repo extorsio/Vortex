@@ -33,7 +33,10 @@
 - Desktop includes an integrated browser preview docked on the right side of chat.
 - The preview is desktop-only in v1 and is user-facing only; agent browser control is not wired yet.
 - Use Electron `WebContentsView`, not WebView2, `iframe`, or Electron `webview`.
-- Key preview files: `apps/desktop/src/previewBrowserController.ts`, `apps/desktop/src/main.ts`, `apps/desktop/src/preload.ts`, `apps/web/src/components/chat/BrowserPreviewPanel.tsx`, `apps/web/src/components/chat/ChatHeader.tsx`, `apps/web/src/components/ChatView.tsx`, `apps/web/src/wsNativeApi.ts`, `packages/contracts/src/ipc.ts`.
+- Browser preview now supports manual `Add to chat` element selection with screenshot + DOM/accessibility/CSS context.
+- Browser element context is still desktop-only and manual-only; there is still no MCP/Playwright agent control wired yet.
+- Key preview files: `apps/desktop/src/previewBrowserController.ts`, `apps/desktop/src/browserSelectionOverlay.ts`, `apps/desktop/src/main.ts`, `apps/desktop/src/preload.ts`, `apps/web/src/components/chat/BrowserPreviewPanel.tsx`, `apps/web/src/components/ChatView.tsx`, `apps/web/src/components/chat/MessagesTimeline.tsx`, `apps/web/src/browserElementContext.ts`, `apps/web/src/composerDraftStore.ts`, `apps/web/src/wsNativeApi.ts`, `packages/contracts/src/ipc.ts`.
+- Important UX detail: browser context is serialized into the sent prompt, but the user timeline should render clean chips/modals instead of dumping raw `[browser_context]` blocks.
 
 ## Codex-First Notes
 
@@ -54,3 +57,4 @@
 - `CRLF` can make `git status` noisy; trust `git diff --name-only` / `git diff --stat` to find real changes.
 - Cross-platform tests should avoid hardcoding `/tmp`, POSIX-only permission failures, or `LF`-only file assertions.
 - Preview-related Zustand selectors must return stable references; fresh arrays/objects can trigger `Maximum update depth exceeded`.
+- Browser context screenshots are persisted like normal image drafts/attachments; if timeline rendering changes, keep prompt serialization and user-facing rendering separate.

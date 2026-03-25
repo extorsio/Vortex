@@ -47,6 +47,7 @@ import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runti
 import {
   PreviewBrowserController,
   createClosedBrowserPreviewState,
+  createIdleBrowserSelectionState,
 } from "./previewBrowserController";
 
 syncShellEnvironment();
@@ -70,6 +71,11 @@ const BROWSER_PREVIEW_FORWARD_CHANNEL = "desktop:browser-preview-forward";
 const BROWSER_PREVIEW_RELOAD_CHANNEL = "desktop:browser-preview-reload";
 const BROWSER_PREVIEW_BOUNDS_CHANNEL = "desktop:browser-preview-bounds";
 const BROWSER_PREVIEW_GET_STATE_CHANNEL = "desktop:browser-preview-get-state";
+const BROWSER_SELECTION_STATE_CHANNEL = "desktop:browser-selection-state";
+const BROWSER_SELECTION_START_CHANNEL = "desktop:browser-selection-start";
+const BROWSER_SELECTION_STOP_CHANNEL = "desktop:browser-selection-stop";
+const BROWSER_SELECTION_GET_STATE_CHANNEL = "desktop:browser-selection-get-state";
+const BROWSER_SELECTION_ADD_TO_CHAT_CHANNEL = "desktop:browser-selection-add-to-chat";
 const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SCHEME = "t3";
@@ -754,6 +760,19 @@ function emitActiveBrowserPreviewState(): void {
   emitBrowserPreviewState(mainWindow, browserPreviewController?.getState());
 }
 
+function emitBrowserSelectionState(
+  window: BrowserWindow,
+  state = createIdleBrowserSelectionState(),
+): void {
+  if (window.isDestroyed()) return;
+  window.webContents.send(BROWSER_SELECTION_STATE_CHANNEL, state);
+}
+
+function emitActiveBrowserSelectionState(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  emitBrowserSelectionState(mainWindow, browserPreviewController?.getSelectionState());
+}
+
 function setUpdateState(patch: Partial<DesktopUpdateState>): void {
   updateState = { ...updateState, ...patch };
   emitUpdateState();
@@ -1118,6 +1137,7 @@ function registerIpcHandlers(): void {
       browserPreviewController = new PreviewBrowserController({
         window: ownerWindow,
         onStateChanged: (state) => emitBrowserPreviewState(ownerWindow, state),
+        onSelectionStateChanged: (state) => emitBrowserSelectionState(ownerWindow, state),
       });
     }
     return browserPreviewController;
@@ -1321,6 +1341,30 @@ function registerIpcHandlers(): void {
     const controller = requireBrowserPreviewController(event);
     return controller.getState();
   });
+
+  ipcMain.removeHandler(BROWSER_SELECTION_START_CHANNEL);
+  ipcMain.handle(BROWSER_SELECTION_START_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.startSelection();
+  });
+
+  ipcMain.removeHandler(BROWSER_SELECTION_STOP_CHANNEL);
+  ipcMain.handle(BROWSER_SELECTION_STOP_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.stopSelection();
+  });
+
+  ipcMain.removeHandler(BROWSER_SELECTION_GET_STATE_CHANNEL);
+  ipcMain.handle(BROWSER_SELECTION_GET_STATE_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.getSelectionState();
+  });
+
+  ipcMain.removeHandler(BROWSER_SELECTION_ADD_TO_CHAT_CHANNEL);
+  ipcMain.handle(BROWSER_SELECTION_ADD_TO_CHAT_CHANNEL, async (event) => {
+    const controller = requireBrowserPreviewController(event);
+    return controller.addCurrentSelectionToChat();
+  });
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {
@@ -1354,6 +1398,7 @@ function createWindow(): BrowserWindow {
   browserPreviewController = new PreviewBrowserController({
     window,
     onStateChanged: (state) => emitBrowserPreviewState(window, state),
+    onSelectionStateChanged: (state) => emitBrowserSelectionState(window, state),
   });
 
   window.webContents.on("context-menu", (event, params) => {
@@ -1400,6 +1445,7 @@ function createWindow(): BrowserWindow {
     window.setTitle(APP_DISPLAY_NAME);
     emitUpdateState();
     emitActiveBrowserPreviewState();
+    emitActiveBrowserSelectionState();
   });
   window.once("ready-to-show", () => {
     window.show();

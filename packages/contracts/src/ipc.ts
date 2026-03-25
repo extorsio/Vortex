@@ -127,6 +127,82 @@ export interface BrowserPreviewNavigateInput {
   workspaceRoot?: string | null;
 }
 
+export type BrowserElementSelectionMode = "idle" | "selecting" | "selected" | "error";
+export type BrowserSharedPageSessionMode = "user-session";
+
+export interface BrowserElementBoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserElementAccessibilitySnapshot {
+  role: string | null;
+  name: string | null;
+  description: string | null;
+  value: string | null;
+  checked: boolean | null;
+  disabled: boolean | null;
+  expanded: boolean | null;
+  selected: boolean | null;
+}
+
+export interface BrowserElementStyleSnapshot {
+  display: string | null;
+  position: string | null;
+  width: string | null;
+  height: string | null;
+  color: string | null;
+  backgroundColor: string | null;
+  fontSize: string | null;
+  fontWeight: string | null;
+  borderRadius: string | null;
+  zIndex: string | null;
+  opacity: string | null;
+}
+
+export interface BrowserElementContext {
+  id: string;
+  selectorLabel: string;
+  tagName: string;
+  domPath: string;
+  boundingBox: BrowserElementBoundingBox | null;
+  textPreview: string | null;
+  attributes: Record<string, string>;
+  accessibility: BrowserElementAccessibilitySnapshot | null;
+  styles: BrowserElementStyleSnapshot | null;
+  pageUrl: string | null;
+  pageTitle: string | null;
+  timestamp: string;
+  screenshotDataUrl: string | null;
+}
+
+export interface BrowserElementContextDraft {
+  id: string;
+  imageAttachmentId: string | null;
+  selectorLabel: string;
+  tagName: string;
+  domPath: string;
+  boundingBox: BrowserElementBoundingBox | null;
+  textPreview: string | null;
+  attributes: Record<string, string>;
+  accessibility: BrowserElementAccessibilitySnapshot | null;
+  styles: BrowserElementStyleSnapshot | null;
+  pageUrl: string | null;
+  pageTitle: string | null;
+  timestamp: string;
+}
+
+export interface BrowserSelectionState {
+  mode: BrowserElementSelectionMode;
+  currentSelection: BrowserElementContext | null;
+  pendingSelectionCount: number;
+  lastError: string | null;
+  sharedWithAgent: boolean;
+  sharedPageSessionMode: BrowserSharedPageSessionMode;
+}
+
 export interface DesktopBridge {
   getWsUrl: () => string | null;
   pickFolder: () => Promise<string | null>;
@@ -152,6 +228,13 @@ export interface DesktopBridge {
     setBounds: (bounds: BrowserPreviewBounds | null) => Promise<void>;
     getState: () => Promise<BrowserPreviewState>;
     onStateChanged: (listener: (state: BrowserPreviewState) => void) => () => void;
+  };
+  browserSelection: {
+    start: () => Promise<BrowserSelectionState>;
+    stop: () => Promise<BrowserSelectionState>;
+    getState: () => Promise<BrowserSelectionState>;
+    addCurrentSelectionToChat: () => Promise<BrowserElementContext | null>;
+    onStateChanged: (listener: (state: BrowserSelectionState) => void) => () => void;
   };
 }
 
@@ -215,6 +298,13 @@ export interface NativeApi {
     setBounds: (bounds: BrowserPreviewBounds | null) => Promise<void>;
     getState: () => Promise<BrowserPreviewState>;
     onStateChanged: (listener: (state: BrowserPreviewState) => void) => () => void;
+  };
+  browserSelection: {
+    start: () => Promise<BrowserSelectionState>;
+    stop: () => Promise<BrowserSelectionState>;
+    getState: () => Promise<BrowserSelectionState>;
+    addCurrentSelectionToChat: () => Promise<BrowserElementContext | null>;
+    onStateChanged: (listener: (state: BrowserSelectionState) => void) => () => void;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

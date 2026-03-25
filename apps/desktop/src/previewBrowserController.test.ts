@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserPreviewPartitionForWorkspaceRoot,
   createClosedBrowserPreviewState,
+  createIdleBrowserSelectionState,
   normalizeBrowserPreviewUrl,
 } from "./previewBrowserController";
 
@@ -39,5 +40,16 @@ describe("previewBrowserController", () => {
     expect(browserPreviewPartitionForWorkspaceRoot("/tmp/project")).not.toBe(
       browserPreviewPartitionForWorkspaceRoot("/tmp/other-project"),
     );
+  });
+
+  it("creates an idle default browser selection state", () => {
+    expect(createIdleBrowserSelectionState()).toEqual({
+      mode: "idle",
+      currentSelection: null,
+      pendingSelectionCount: 0,
+      lastError: null,
+      sharedWithAgent: false,
+      sharedPageSessionMode: "user-session",
+    });
   });
 });

@@ -31,6 +31,7 @@ import {
   TerminalIcon,
   Undo2Icon,
   WrenchIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -55,6 +56,12 @@ import {
   formatInlineTerminalContextLabel,
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
+import {
+  buildBrowserElementContextDetailMarkdown,
+  extractTrailingBrowserElementContexts,
+  formatBrowserElementChipLabel,
+  type ParsedBrowserElementContextEntry,
+} from "../../browserElementContext";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
@@ -108,6 +115,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 }: MessagesTimelineProps) {
   const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const [timelineWidthPx, setTimelineWidthPx] = useState<number | null>(null);
+  const [selectedBrowserContext, setSelectedBrowserContext] = useState<{
+    context: ParsedBrowserElementContextEntry;
+    image: { src: string; name: string } | null;
+  } | null>(null);
 
   useLayoutEffect(() => {
     const timelineRoot = timelineRootRef.current;
@@ -355,9 +366,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       {row.kind === "message" &&
         row.message.role === "user" &&
         (() => {
-          const userImages = row.message.attachments ?? [];
-          const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+          const extractedBrowserContexts = extractTrailingBrowserElementContexts(row.message.text);
+          const displayedUserMessageBase = deriveDisplayedUserMessageState(
+            extractedBrowserContexts.promptText,
+          );
+          const displayedUserMessage = {
+            ...displayedUserMessageBase,
+            copyText: row.message.text,
+          };
           const terminalContexts = displayedUserMessage.contexts;
+          const browserContexts = extractedBrowserContexts.contexts;
+          const browserAttachmentNames = new Set(
+            browserContexts.flatMap((context) =>
+              context.attachmentName ? [context.attachmentName] : [],
+            ),
+          );
+          const allUserImages = row.message.attachments ?? [];
+          const userImages = allUserImages.filter(
+            (image) => !browserAttachmentNames.has(image.name),
+          );
+          const browserImagesByName = new Map(
+            allUserImages.flatMap((image) => (image.name ? [[image.name, image]] : [])),
+          );
           const canRevertAgentWork = revertTurnCountByUserMessageId.has(row.message.id);
           return (
             <div className="flex justify-end">
@@ -397,6 +427,35 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                         </div>
                       ),
                     )}
+                  </div>
+                )}
+                {browserContexts.length > 0 && (
+                  <div className="mb-2 flex flex-wrap justify-end gap-2">
+                    {browserContexts.map((context) => {
+                      const linkedImage = context.attachmentName
+                        ? (browserImagesByName.get(context.attachmentName) ?? null)
+                        : null;
+                      return (
+                        <button
+                          key={`${row.message.id}:${context.selectorLabel}:${context.domPath}`}
+                          type="button"
+                          className="inline-flex max-w-full items-center rounded-full border border-border/80 bg-background/80 px-2.5 py-1 text-xs text-foreground/90 transition-colors hover:bg-background"
+                          onClick={() => {
+                            setSelectedBrowserContext({
+                              context,
+                              image: linkedImage?.previewUrl
+                                ? { src: linkedImage.previewUrl, name: linkedImage.name }
+                                : null,
+                            });
+                          }}
+                        >
+                          {formatBrowserElementChipLabel({
+                            selectorLabel: context.selectorLabel,
+                            tagName: context.selectorLabel.split(/[#.]/)[0] || "element",
+                          })}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
                 {(displayedUserMessage.visibleText.trim().length > 0 ||
@@ -555,45 +614,57 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   if (!hasMessages && !isWorking) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-muted-foreground/30">
-          Send a message to start the conversation.
-        </p>
-      </div>
+      <>
+        <div className="flex h-full items-center justify-center">
+          <p className="text-sm text-muted-foreground/30">
+            Send a message to start the conversation.
+          </p>
+        </div>
+        <BrowserContextDetailDialog
+          entry={selectedBrowserContext}
+          onClose={() => setSelectedBrowserContext(null)}
+        />
+      </>
     );
   }
 
   return (
-    <div
-      ref={timelineRootRef}
-      data-timeline-root="true"
-      className="mx-auto w-full min-w-0 max-w-3xl overflow-x-hidden"
-    >
-      {virtualizedRowCount > 0 && (
-        <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
-          {virtualRows.map((virtualRow: VirtualItem) => {
-            const row = rows[virtualRow.index];
-            if (!row) return null;
+    <>
+      <div
+        ref={timelineRootRef}
+        data-timeline-root="true"
+        className="mx-auto w-full min-w-0 max-w-3xl overflow-x-hidden"
+      >
+        {virtualizedRowCount > 0 && (
+          <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+            {virtualRows.map((virtualRow: VirtualItem) => {
+              const row = rows[virtualRow.index];
+              if (!row) return null;
 
-            return (
-              <div
-                key={`virtual-row:${row.id}`}
-                data-index={virtualRow.index}
-                ref={rowVirtualizer.measureElement}
-                className="absolute left-0 top-0 w-full"
-                style={{ transform: `translateY(${virtualRow.start}px)` }}
-              >
-                {renderRowContent(row)}
-              </div>
-            );
-          })}
-        </div>
-      )}
+              return (
+                <div
+                  key={`virtual-row:${row.id}`}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  {renderRowContent(row)}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-      {nonVirtualizedRows.map((row) => (
-        <div key={`non-virtual-row:${row.id}`}>{renderRowContent(row)}</div>
-      ))}
-    </div>
+        {nonVirtualizedRows.map((row) => (
+          <div key={`non-virtual-row:${row.id}`}>{renderRowContent(row)}</div>
+        ))}
+      </div>
+      <BrowserContextDetailDialog
+        entry={selectedBrowserContext}
+        onClose={() => setSelectedBrowserContext(null)}
+      />
+    </>
   );
 });
 
@@ -762,6 +833,73 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     <pre className="whitespace-pre-wrap wrap-break-word font-mono text-sm leading-relaxed text-foreground">
       {props.text}
     </pre>
+  );
+});
+
+const BrowserContextDetailDialog = memo(function BrowserContextDetailDialog(props: {
+  entry: {
+    context: ParsedBrowserElementContextEntry;
+    image: { src: string; name: string } | null;
+  } | null;
+  onClose: () => void;
+}) {
+  if (!props.entry) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6 [-webkit-app-region:no-drag]">
+      <button
+        type="button"
+        className="absolute inset-0 z-0 cursor-default"
+        aria-label="Close browser context preview"
+        onClick={props.onClose}
+      />
+      <div className="relative z-10 flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              {formatBrowserElementChipLabel({
+                selectorLabel: props.entry.context.selectorLabel,
+                tagName: props.entry.context.selectorLabel.split(/[#.]/)[0] || "element",
+              })}
+            </p>
+            <p className="text-xs text-muted-foreground/70">
+              {props.entry.context.page ?? "Attached element context"}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            onClick={props.onClose}
+            aria-label="Close browser context preview"
+          >
+            <XIcon />
+          </Button>
+        </div>
+        <div className="grid min-h-0 flex-1 gap-0 overflow-hidden md:grid-cols-[240px_minmax(0,1fr)]">
+          <div className="border-b border-border/70 bg-background/40 p-4 md:border-b-0 md:border-r">
+            {props.entry.image ? (
+              <img
+                src={props.entry.image.src}
+                alt={props.entry.image.name}
+                className="max-h-64 w-full rounded-lg border border-border/70 object-contain"
+              />
+            ) : (
+              <div className="flex h-40 items-center justify-center rounded-lg border border-dashed border-border/70 text-xs text-muted-foreground/70">
+                No screenshot available
+              </div>
+            )}
+          </div>
+          <div className="min-h-0 overflow-auto p-4">
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-foreground/90">
+              {buildBrowserElementContextDetailMarkdown(props.entry.context)}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 });
 

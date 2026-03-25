@@ -25,6 +25,7 @@ async function mountPicker(props?: {
     nonPersistedImageIds: [],
     persistedAttachments: [],
     terminalContexts: [],
+    browserElementContexts: [],
     provider: "claudeAgent",
     model: props?.model ?? "claude-opus-4-6",
     modelOptions: {

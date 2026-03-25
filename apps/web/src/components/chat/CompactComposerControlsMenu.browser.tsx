@@ -27,6 +27,7 @@ async function mountMenu(props?: {
     nonPersistedImageIds: [],
     persistedAttachments: [],
     terminalContexts: [],
+    browserElementContexts: [],
     provider,
     model: props?.model ?? "claude-opus-4-6",
     modelOptions: props?.modelOptions ?? null,

@@ -1,4 +1,5 @@
 import {
+  type GitActionProgressEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   type BrowserPreviewState,
@@ -51,6 +52,7 @@ function ensureBrowserPreviewBridgeSubscription(): void {
     notifyBrowserPreviewState(state);
   });
 }
+const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
 
 /**
  * Subscribe to the server welcome message. If a welcome was already received
@@ -139,6 +141,16 @@ export function createWsNativeApi(): NativeApi {
     }
   });
   ensureBrowserPreviewBridgeSubscription();
+  transport.subscribe(WS_CHANNELS.gitActionProgress, (message) => {
+    const payload = message.data;
+    for (const listener of gitActionProgressListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+        }
+      }
+    });
 
   const api: NativeApi = {
     dialogs: {
@@ -187,7 +199,8 @@ export function createWsNativeApi(): NativeApi {
     git: {
       pull: (input) => transport.request(WS_METHODS.gitPull, input),
       status: (input) => transport.request(WS_METHODS.gitStatus, input),
-      runStackedAction: (input) => transport.request(WS_METHODS.gitRunStackedAction, input),
+      runStackedAction: (input) =>
+        transport.request(WS_METHODS.gitRunStackedAction, input, { timeoutMs: null }),
       listBranches: (input) => transport.request(WS_METHODS.gitListBranches, input),
       createWorktree: (input) => transport.request(WS_METHODS.gitCreateWorktree, input),
       removeWorktree: (input) => transport.request(WS_METHODS.gitRemoveWorktree, input),
@@ -197,6 +210,12 @@ export function createWsNativeApi(): NativeApi {
       resolvePullRequest: (input) => transport.request(WS_METHODS.gitResolvePullRequest, input),
       preparePullRequestThread: (input) =>
         transport.request(WS_METHODS.gitPreparePullRequestThread, input),
+      onActionProgress: (callback) => {
+        gitActionProgressListeners.add(callback);
+        return () => {
+          gitActionProgressListeners.delete(callback);
+        };
+      },
     },
     contextMenu: {
       show: async <T extends string>(

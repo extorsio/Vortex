@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
-import { DiffIcon, GlobeIcon } from "lucide-react";
+import { DiffIcon, GlobeIcon, TerminalSquareIcon } from "lucide-react";
 import { isElectron } from "~/env";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -26,6 +26,9 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   browserPreviewOpen: boolean;
+  terminalAvailable: boolean;
+  terminalOpen: boolean;
+  terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffOpen: boolean;
@@ -34,6 +37,7 @@ interface ChatHeaderProps {
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onBrowserPreviewPressedChange: (pressed: boolean) => void;
+  onToggleTerminal: () => void;
   onToggleDiff: () => void;
 }
 
@@ -48,6 +52,9 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   browserPreviewOpen,
+  terminalAvailable,
+  terminalOpen,
+  terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
   gitCwd,
   diffOpen,
@@ -56,6 +63,7 @@ export const ChatHeader = memo(function ChatHeader({
   onUpdateProjectScript,
   onDeleteProjectScript,
   onBrowserPreviewPressedChange,
+  onToggleTerminal,
   onToggleDiff,
 }: ChatHeaderProps) {
   return (
@@ -123,6 +131,30 @@ export const ChatHeader = memo(function ChatHeader({
           />
         )}
         {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className="shrink-0"
+                pressed={terminalOpen}
+                onPressedChange={onToggleTerminal}
+                aria-label="Toggle terminal drawer"
+                variant="outline"
+                size="xs"
+                disabled={!terminalAvailable}
+              >
+                <TerminalSquareIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side="bottom">
+            {!terminalAvailable
+              ? "Terminal is unavailable until this thread has an active project."
+              : terminalToggleShortcutLabel
+                ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
+                : "Toggle terminal drawer"}
+          </TooltipPopup>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger
             render={
